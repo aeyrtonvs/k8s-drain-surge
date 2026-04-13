@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -36,6 +37,7 @@ func testScheme() *runtime.Scheme {
 	_ = corev1.AddToScheme(s)
 	_ = appsv1.AddToScheme(s)
 	_ = policyv1.AddToScheme(s)
+	_ = rolloutsv1alpha1.AddToScheme(s)
 	return s
 }
 
@@ -45,6 +47,13 @@ func newReconciler(objs ...client.Object) (*NodeReconciler, client.Client) {
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&appsv1.Deployment{}).
+		WithIndex(&corev1.Pod{}, "spec.nodeName", func(o client.Object) []string {
+			pod := o.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}).
 		Build()
 
 	return &NodeReconciler{
