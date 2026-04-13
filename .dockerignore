@@ -1,0 +1,31 @@
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/
+
+# Docs and specs
+docs/
+README.md
+LICENSE
+
+# Helm chart (not needed in the image)
+deploy/
+
+# Test fixtures and scripts
+hack/
+
+# Build output
+bin/
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Helm packaged charts
+*.tgz

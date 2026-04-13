@@ -1,0 +1,23 @@
+# Specs and internal planning docs
+docs/specs/
+
+# Build output
+bin/
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Helm packaged charts
+*.tgz

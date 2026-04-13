@@ -1,0 +1,6 @@
+{
+  "name": "k8s-drain-surge",
+  "image": "golang:1.22-bookworm",
+  "postCreateCommand": "go mod tidy",
+  "remoteUser": "root"
+}
