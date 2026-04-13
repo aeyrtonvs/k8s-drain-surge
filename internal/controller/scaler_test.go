@@ -151,49 +151,20 @@ func TestFindMatchingPDB_NoPDBs(t *testing.T) {
 	}
 }
 
-func TestCheckHPACompatibility_NoHPA(t *testing.T) {
+func TestFindMatchingHPA_NoHPA(t *testing.T) {
 	ctx := context.Background()
 	c := scalerClient()
 
-	compatible, exists, err := CheckHPACompatibility(ctx, c, "default", "my-dep", "Deployment")
+	hpa, err := FindMatchingHPA(ctx, c, "default", "my-dep", "Deployment")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if exists {
+	if hpa != nil {
 		t.Fatal("expected no HPA")
 	}
-	if !compatible {
-		t.Fatal("expected compatible when no HPA exists")
-	}
 }
 
-func TestCheckHPACompatibility_MaxReplicas1(t *testing.T) {
-	ctx := context.Background()
-	hpa := &autoscalingv2.HorizontalPodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-hpa", Namespace: "default"},
-		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
-			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-				Kind: "Deployment",
-				Name: "my-dep",
-			},
-			MaxReplicas: 1,
-		},
-	}
-	c := scalerClient(hpa)
-
-	compatible, exists, err := CheckHPACompatibility(ctx, c, "default", "my-dep", "Deployment")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected HPA to exist")
-	}
-	if compatible {
-		t.Fatal("expected not compatible with maxReplicas=1")
-	}
-}
-
-func TestCheckHPACompatibility_MaxReplicasGt1(t *testing.T) {
+func TestFindMatchingHPA_Found(t *testing.T) {
 	ctx := context.Background()
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-hpa", Namespace: "default"},
@@ -207,15 +178,41 @@ func TestCheckHPACompatibility_MaxReplicasGt1(t *testing.T) {
 	}
 	c := scalerClient(hpa)
 
-	compatible, exists, err := CheckHPACompatibility(ctx, c, "default", "my-dep", "Deployment")
+	found, err := FindMatchingHPA(ctx, c, "default", "my-dep", "Deployment")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !exists {
-		t.Fatal("expected HPA to exist")
+	if found == nil {
+		t.Fatal("expected HPA to be found")
 	}
-	if !compatible {
-		t.Fatal("expected compatible with maxReplicas=5")
+	if found.Name != "my-hpa" {
+		t.Fatalf("expected HPA name my-hpa, got %s", found.Name)
+	}
+	if found.Spec.MaxReplicas != 5 {
+		t.Fatalf("expected maxReplicas=5, got %d", found.Spec.MaxReplicas)
+	}
+}
+
+func TestFindMatchingHPA_NoMatch(t *testing.T) {
+	ctx := context.Background()
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "other-hpa", Namespace: "default"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				Kind: "Deployment",
+				Name: "other-dep",
+			},
+			MaxReplicas: 5,
+		},
+	}
+	c := scalerClient(hpa)
+
+	found, err := FindMatchingHPA(ctx, c, "default", "my-dep", "Deployment")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found != nil {
+		t.Fatal("expected no matching HPA")
 	}
 }
 
