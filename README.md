@@ -99,6 +99,28 @@ spec:
 
 If your NodePool has `terminationGracePeriod` configured, it must be **greater** than the controller's `--readiness-timeout` (default 10m). Without `terminationGracePeriod`, Karpenter waits indefinitely (which is the ideal behavior).
 
+## Development
+
+### Devcontainer (recommended)
+
+Requires VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension, or any editor that supports the devcontainer spec.
+
+1. Open the project in VS Code
+2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**
+3. The container starts with Go 1.22 and runs `go mod tidy` automatically
+
+### Make targets
+
+| Command | Description |
+|---|---|
+| `make build` | Compile the controller binary to `bin/controller` |
+| `make test` | Run all tests with race detector |
+| `make vet` | Run `go vet` |
+| `make fmt` | Run `go fmt` |
+| `make tidy` | Run `go mod tidy` |
+| `make docker-build` | Build the Docker image locally |
+| `make helm-package` | Package the Helm chart to `bin/` |
+
 ## Installation
 
 ### Helm CLI
