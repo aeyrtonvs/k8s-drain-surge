@@ -20,11 +20,13 @@ const (
 )
 
 const (
-	AnnotationEnabled          = "k8s-drain-surge.io/enabled"
-	AnnotationDrainState       = "k8s-drain-surge.io/drain-state"
-	AnnotationOriginalReplicas = "k8s-drain-surge.io/original-replicas"
-	AnnotationDrainNode        = "k8s-drain-surge.io/drain-node"
-	AnnotationDrainStart       = "k8s-drain-surge.io/drain-start"
+	AnnotationEnabled             = "k8s-drain-surge.io/enabled"
+	AnnotationDrainState          = "k8s-drain-surge.io/drain-state"
+	AnnotationOriginalReplicas    = "k8s-drain-surge.io/original-replicas"
+	AnnotationDrainNode           = "k8s-drain-surge.io/drain-node"
+	AnnotationDrainStart          = "k8s-drain-surge.io/drain-start"
+	AnnotationHPAName             = "k8s-drain-surge.io/hpa-name"
+	AnnotationHPAOriginalMinReplicas = "k8s-drain-surge.io/hpa-original-min-replicas"
 )
 
 const reasonNewRSAvailable = "NewReplicaSetAvailable"
@@ -36,6 +38,8 @@ var drainAnnotationKeys = []string{
 	AnnotationOriginalReplicas,
 	AnnotationDrainNode,
 	AnnotationDrainStart,
+	AnnotationHPAName,
+	AnnotationHPAOriginalMinReplicas,
 }
 
 // clearDrainAnnotations removes all controller-managed annotations from the map.
