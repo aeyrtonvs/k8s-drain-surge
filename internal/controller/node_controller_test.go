@@ -80,8 +80,9 @@ func newTaintedNode(name string) *corev1.Node {
 func newDeployment(name, namespace string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+			Name:       name,
+			Namespace:  namespace,
+			Generation: 1,
 			Annotations: map[string]string{
 				AnnotationEnabled: "true",
 			},
