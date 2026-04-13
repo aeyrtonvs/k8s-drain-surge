@@ -138,7 +138,7 @@ func TestDeploymentWorkload_GetPodSelector_Nil(t *testing.T) {
 	}
 	wl := &DeploymentWorkload{Deployment: dep}
 	sel := wl.GetPodSelector()
-	if sel.Matches(map[string]string{"app": "test"}) {
+	if sel.Matches(labels.Set{"app": "test"}) {
 		t.Fatal("expected nil selector to match nothing")
 	}
 }
