@@ -236,6 +236,21 @@ func (r *NodeReconciler) handleWaitReady(ctx context.Context, wl DrainableWorklo
 	logger := log.FromContext(ctx)
 	meta := wl.GetObjectMeta()
 
+	// Re-apply scale-up if replicas were reset externally (e.g. by HPA).
+	original, err := getOriginalReplicas(meta.Annotations)
+	if err != nil {
+		logger.Error(err, "cannot determine original replicas, aborting")
+		return r.abortWorkload(ctx, wl)
+	}
+	if wl.GetReplicas() <= original {
+		logger.Info("replicas were reset externally, re-applying scale-up")
+		wl.SetReplicas(original + 1)
+		if err := wl.Patch(ctx, r.Client); err != nil {
+			return ctrl.Result{}, fmt.Errorf("re-apply scale-up: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
+	}
+
 	ready, err := FindReadyPodOnOtherNode(ctx, r.Client, meta.Namespace, wl.GetPodSelector(), nodeName)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -250,7 +265,7 @@ func (r *NodeReconciler) handleWaitReady(ctx context.Context, wl DrainableWorklo
 		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 	}
 
-	logger.V(1).Info("waiting for new pod to become ready")
+	logger.Info("waiting for new pod to become ready on another node")
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 }
 
