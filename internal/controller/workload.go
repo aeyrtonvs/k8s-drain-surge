@@ -1,0 +1,136 @@
+package controller
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// DrainableWorkload abstracts the differences between Argo Rollouts and Deployments.
+type DrainableWorkload interface {
+	GetReplicas() int32
+	SetReplicas(int32)
+	IsStable() bool
+	CanSurge() bool
+	GetPodSelector() labels.Selector
+	GetObjectMeta() *metav1.ObjectMeta
+	GetObjectKind() string
+	Patch(ctx context.Context, c client.Client) error
+	Object() client.Object
+}
+
+// patchReplicasAndAnnotations applies a MergePatch with replicas and annotations.
+func patchReplicasAndAnnotations(ctx context.Context, c client.Client, obj client.Object, replicas *int32, annotations map[string]string) error {
+	patch, err := json.Marshal(map[string]interface{}{
+		"spec":     map[string]interface{}{"replicas": replicas},
+		"metadata": map[string]interface{}{"annotations": annotations},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal patch: %w", err)
+	}
+	return c.Patch(ctx, obj, client.RawPatch(types.MergePatchType, patch))
+}
+
+// selectorFromLabelSelector converts a LabelSelector to a labels.Selector,
+// returning labels.Nothing() on nil or error.
+func selectorFromLabelSelector(ls *metav1.LabelSelector) labels.Selector {
+	if ls == nil {
+		return labels.Nothing()
+	}
+	sel, err := metav1.LabelSelectorAsSelector(ls)
+	if err != nil {
+		return labels.Nothing()
+	}
+	return sel
+}
+
+// RolloutWorkload wraps an Argo Rollout.
+type RolloutWorkload struct {
+	Rollout *rolloutsv1alpha1.Rollout
+}
+
+func (r *RolloutWorkload) GetReplicas() int32 {
+	if r.Rollout.Spec.Replicas == nil {
+		return 1
+	}
+	return *r.Rollout.Spec.Replicas
+}
+
+func (r *RolloutWorkload) SetReplicas(n int32) {
+	r.Rollout.Spec.Replicas = &n
+}
+
+func (r *RolloutWorkload) IsStable() bool {
+	return r.Rollout.Status.Phase == rolloutsv1alpha1.RolloutPhaseHealthy
+}
+
+func (r *RolloutWorkload) CanSurge() bool { return true }
+
+func (r *RolloutWorkload) GetPodSelector() labels.Selector {
+	return selectorFromLabelSelector(r.Rollout.Spec.Selector)
+}
+
+func (r *RolloutWorkload) GetObjectMeta() *metav1.ObjectMeta {
+	return &r.Rollout.ObjectMeta
+}
+
+func (r *RolloutWorkload) GetObjectKind() string { return "Rollout" }
+
+func (r *RolloutWorkload) Patch(ctx context.Context, c client.Client) error {
+	return patchReplicasAndAnnotations(ctx, c, r.Rollout, r.Rollout.Spec.Replicas, r.Rollout.Annotations)
+}
+
+func (r *RolloutWorkload) Object() client.Object { return r.Rollout }
+
+// DeploymentWorkload wraps a Kubernetes Deployment.
+type DeploymentWorkload struct {
+	Deployment *appsv1.Deployment
+}
+
+func (d *DeploymentWorkload) GetReplicas() int32 {
+	if d.Deployment.Spec.Replicas == nil {
+		return 1
+	}
+	return *d.Deployment.Spec.Replicas
+}
+
+func (d *DeploymentWorkload) SetReplicas(n int32) {
+	d.Deployment.Spec.Replicas = &n
+}
+
+func (d *DeploymentWorkload) IsStable() bool {
+	for _, cond := range d.Deployment.Status.Conditions {
+		if cond.Type == appsv1.DeploymentProgressing && cond.Reason == reasonNewRSAvailable {
+			return true
+		}
+	}
+	return d.Deployment.Status.ObservedGeneration == d.Deployment.Generation
+}
+
+// CanSurge returns false for Recreate strategy Deployments.
+func (d *DeploymentWorkload) CanSurge() bool {
+	return d.Deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType
+}
+
+func (d *DeploymentWorkload) GetPodSelector() labels.Selector {
+	return selectorFromLabelSelector(d.Deployment.Spec.Selector)
+}
+
+func (d *DeploymentWorkload) GetObjectMeta() *metav1.ObjectMeta {
+	return &d.Deployment.ObjectMeta
+}
+
+func (d *DeploymentWorkload) GetObjectKind() string { return "Deployment" }
+
+func (d *DeploymentWorkload) Patch(ctx context.Context, c client.Client) error {
+	return patchReplicasAndAnnotations(ctx, c, d.Deployment, d.Deployment.Spec.Replicas, d.Deployment.Annotations)
+}
+
+func (d *DeploymentWorkload) Object() client.Object { return d.Deployment }
