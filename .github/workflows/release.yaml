@@ -21,6 +21,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: true
+
+      - name: Tidy modules
+        run: go mod tidy
 
       - name: Vet
         run: go vet ./...
