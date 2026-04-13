@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/aeyrton/k8s-drain-surge/internal/config"
+	"github.com/aeyrtonvs/k8s-drain-surge/internal/config"
 )
 
 type NodeReconciler struct {

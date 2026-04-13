@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/aeyrton/k8s-drain-surge
+  repository: ghcr.io/aeyrtonvs/k8s-drain-surge
   pullPolicy: IfNotPresent
   tag: ""
 

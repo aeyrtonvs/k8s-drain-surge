@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/aeyrton/k8s-drain-surge/internal/config"
+	"github.com/aeyrtonvs/k8s-drain-surge/internal/config"
 )
 
 func testConfig() *config.Config {
