@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -194,14 +195,42 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 	meta.Annotations[AnnotationOriginalReplicas] = strconv.Itoa(int(originalReplicas))
 	meta.Annotations[AnnotationDrainNode] = nodeName
 	meta.Annotations[AnnotationDrainStart] = time.Now().UTC().Format(time.RFC3339)
-	wl.SetReplicas(originalReplicas + 1)
+
+	// Check if an HPA manages this workload. If so, patch HPA minReplicas
+	// instead of the workload's spec.replicas — the HPA always wins.
+	hpa, err := FindMatchingHPA(ctx, r.Client, meta.Namespace, meta.Name, wl.GetObjectKind())
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if hpa != nil {
+		if hpa.Spec.MaxReplicas < originalReplicas+1 {
+			logger.Info("HPA maxReplicas too low for surge, skipping", "maxReplicas", hpa.Spec.MaxReplicas)
+			r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainSkipped", "HPA maxReplicas=%d prevents drain surge", hpa.Spec.MaxReplicas)
+			return ctrl.Result{}, nil
+		}
+
+		originalMin := int32(1)
+		if hpa.Spec.MinReplicas != nil {
+			originalMin = *hpa.Spec.MinReplicas
+		}
+		meta.Annotations[AnnotationHPAName] = hpa.Name
+		meta.Annotations[AnnotationHPAOriginalMinReplicas] = strconv.Itoa(int(originalMin))
+
+		if err := PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpa.Name, originalReplicas+1); err != nil {
+			return ctrl.Result{}, fmt.Errorf("patch HPA minReplicas for scale-up: %w", err)
+		}
+		logger.Info("patched HPA minReplicas for surge", "hpa", hpa.Name, "from", originalMin, "to", originalReplicas+1)
+		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Patched HPA %s minReplicas from %d to %d for node drain on %s", hpa.Name, originalMin, originalReplicas+1, nodeName)
+	} else {
+		wl.SetReplicas(originalReplicas + 1)
+		logger.Info("scaled up workload", "from", originalReplicas, "to", originalReplicas+1)
+		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Scaled up from %d to %d for node drain on %s", originalReplicas, originalReplicas+1, nodeName)
+	}
 
 	if err := wl.Patch(ctx, r.Client); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch workload for scale-up: %w", err)
 	}
-
-	logger.Info("scaled up workload", "from", originalReplicas, "to", originalReplicas+1)
-	r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Scaled up from %d to %d for node drain on %s", originalReplicas, originalReplicas+1, nodeName)
 
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 }
@@ -236,19 +265,21 @@ func (r *NodeReconciler) handleWaitReady(ctx context.Context, wl DrainableWorklo
 	logger := log.FromContext(ctx)
 	meta := wl.GetObjectMeta()
 
-	// Re-apply scale-up if replicas were reset externally (e.g. by HPA).
-	original, err := getOriginalReplicas(meta.Annotations)
-	if err != nil {
-		logger.Error(err, "cannot determine original replicas, aborting")
-		return r.abortWorkload(ctx, wl)
-	}
-	if wl.GetReplicas() <= original {
-		logger.Info("replicas were reset externally, re-applying scale-up")
-		wl.SetReplicas(original + 1)
-		if err := wl.Patch(ctx, r.Client); err != nil {
-			return ctrl.Result{}, fmt.Errorf("re-apply scale-up: %w", err)
+	// For non-HPA workloads, re-apply scale-up if replicas were reset externally (e.g. by ArgoCD).
+	if meta.Annotations[AnnotationHPAName] == "" {
+		original, err := getOriginalReplicas(meta.Annotations)
+		if err != nil {
+			logger.Error(err, "cannot determine original replicas, aborting")
+			return r.abortWorkload(ctx, wl)
 		}
-		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
+		if wl.GetReplicas() <= original {
+			logger.Info("replicas were reset externally, re-applying scale-up")
+			wl.SetReplicas(original + 1)
+			if err := wl.Patch(ctx, r.Client); err != nil {
+				return ctrl.Result{}, fmt.Errorf("re-apply scale-up: %w", err)
+			}
+			return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
+		}
 	}
 
 	ready, err := FindReadyPodOnOtherNode(ctx, r.Client, meta.Namespace, wl.GetPodSelector(), nodeName)
@@ -279,12 +310,21 @@ func (r *NodeReconciler) handleWaitEviction(ctx context.Context, wl DrainableWor
 	}
 
 	if !podOnNode {
+		// Restore HPA minReplicas if we patched it.
+		if err := r.restoreHPA(ctx, meta); err != nil {
+			return ctrl.Result{}, fmt.Errorf("restore HPA after eviction: %w", err)
+		}
+
 		original, err := getOriginalReplicas(meta.Annotations)
 		if err != nil {
 			logger.Error(err, "cannot determine original replicas, aborting")
 			return r.abortWorkload(ctx, wl)
 		}
-		wl.SetReplicas(original)
+
+		// For non-HPA workloads, scale down directly.
+		if meta.Annotations[AnnotationHPAName] == "" {
+			wl.SetReplicas(original)
+		}
 		meta.Annotations[AnnotationDrainState] = string(DrainStateDraining)
 		if err := wl.Patch(ctx, r.Client); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch workload for scale-down: %w", err)
@@ -306,8 +346,8 @@ func (r *NodeReconciler) handleScaleDown(ctx context.Context, wl DrainableWorklo
 		return r.abortWorkload(ctx, wl)
 	}
 
-	// Write both replica count and state transition in a single patch.
-	if wl.GetReplicas() != original {
+	// For non-HPA workloads, scale down directly.
+	if meta.Annotations[AnnotationHPAName] == "" && wl.GetReplicas() != original {
 		wl.SetReplicas(original)
 	}
 	meta.Annotations[AnnotationDrainState] = string(DrainStateDone)
@@ -334,6 +374,11 @@ func (r *NodeReconciler) handleCleanup(ctx context.Context, wl DrainableWorkload
 func (r *NodeReconciler) abortWorkload(ctx context.Context, wl DrainableWorkload) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	meta := wl.GetObjectMeta()
+
+	// Restore HPA minReplicas if we patched it.
+	if err := r.restoreHPA(ctx, meta); err != nil {
+		logger.Error(err, "failed to restore HPA during abort")
+	}
 
 	if original, err := getOriginalReplicas(meta.Annotations); err == nil {
 		wl.SetReplicas(original)
@@ -423,18 +468,35 @@ func (r *NodeReconciler) shouldProcess(ctx context.Context, wl DrainableWorkload
 		return false
 	}
 
-	compatible, hpaExists, err := CheckHPACompatibility(ctx, r.Client, meta.Namespace, meta.Name, wl.GetObjectKind())
+	hpa, err := FindMatchingHPA(ctx, r.Client, meta.Namespace, meta.Name, wl.GetObjectKind())
 	if err != nil {
-		logger.Error(err, "failed to check HPA compatibility")
+		logger.Error(err, "failed to check HPA")
 		return false
 	}
-	if hpaExists && !compatible {
+	if hpa != nil && hpa.Spec.MaxReplicas <= 1 {
 		logger.Info("HPA maxReplicas is 1, cannot surge")
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainSkipped", "HPA maxReplicas=1 prevents drain surge")
 		return false
 	}
 
 	return true
+}
+
+// restoreHPA restores the HPA minReplicas to the original value if the controller
+// patched it. This is a no-op if no HPA annotation is present.
+func (r *NodeReconciler) restoreHPA(ctx context.Context, meta *metav1.ObjectMeta) error {
+	hpaName := meta.Annotations[AnnotationHPAName]
+	if hpaName == "" {
+		return nil
+	}
+	originalMinStr := meta.Annotations[AnnotationHPAOriginalMinReplicas]
+	originalMin, err := strconv.Atoi(originalMinStr)
+	if err != nil {
+		return fmt.Errorf("invalid %s value %q: %w", AnnotationHPAOriginalMinReplicas, originalMinStr, err)
+	}
+	logger := log.FromContext(ctx)
+	logger.Info("restoring HPA minReplicas", "hpa", hpaName, "minReplicas", originalMin)
+	return PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpaName, int32(originalMin))
 }
 
 func (r *NodeReconciler) hasDrainTaint(node *corev1.Node) bool {
