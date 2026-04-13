@@ -154,7 +154,7 @@ func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWork
 	}
 
 	switch currentState {
-	case DrainStateNone, "":
+	case DrainStateNone:
 		return r.handlePending(ctx, wl, nodeName)
 	case DrainStatePending:
 		return r.handleScaleUp(ctx, wl, nodeName)
