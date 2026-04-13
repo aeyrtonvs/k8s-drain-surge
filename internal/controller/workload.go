@@ -27,10 +27,21 @@ type DrainableWorkload interface {
 }
 
 // patchReplicasAndAnnotations applies a MergePatch with replicas and annotations.
+// Annotations present in the map are set; drain annotation keys absent from the
+// map are explicitly set to null so the merge patch deletes them server-side.
 func patchReplicasAndAnnotations(ctx context.Context, c client.Client, obj client.Object, replicas *int32, annotations map[string]string) error {
+	annoPatch := make(map[string]interface{}, len(annotations)+len(drainAnnotationKeys))
+	for k, v := range annotations {
+		annoPatch[k] = v
+	}
+	for _, key := range drainAnnotationKeys {
+		if _, exists := annotations[key]; !exists {
+			annoPatch[key] = nil
+		}
+	}
 	patch, err := json.Marshal(map[string]interface{}{
 		"spec":     map[string]interface{}{"replicas": replicas},
-		"metadata": map[string]interface{}{"annotations": annotations},
+		"metadata": map[string]interface{}{"annotations": annoPatch},
 	})
 	if err != nil {
 		return fmt.Errorf("marshal patch: %w", err)
