@@ -5,6 +5,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 func TestDeploymentWorkload_GetReplicas_NilDefaults(t *testing.T) {
@@ -123,10 +124,10 @@ func TestDeploymentWorkload_GetPodSelector(t *testing.T) {
 	}
 	wl := &DeploymentWorkload{Deployment: dep}
 	sel := wl.GetPodSelector()
-	if !sel.Matches(map[string]string{"app": "test"}) {
+	if !sel.Matches(labels.Set{"app": "test"}) {
 		t.Fatal("expected selector to match {app: test}")
 	}
-	if sel.Matches(map[string]string{"app": "other"}) {
+	if sel.Matches(labels.Set{"app": "other"}) {
 		t.Fatal("expected selector to NOT match {app: other}")
 	}
 }
