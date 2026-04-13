@@ -1,4 +1,4 @@
-module github.com/aeyrton/k8s-drain-surge
+module github.com/aeyrtonvs/k8s-drain-surge
 
 go 1.22.0
 

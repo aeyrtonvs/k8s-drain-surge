@@ -104,7 +104,7 @@ If your NodePool has `terminationGracePeriod` configured, it must be **greater**
 ### Helm CLI
 
 ```bash
-helm install k8s-drain-surge oci://ghcr.io/aeyrton/charts/k8s-drain-surge \
+helm install k8s-drain-surge oci://ghcr.io/aeyrtonvs/charts/k8s-drain-surge \
   --version <VERSION> \
   --namespace kube-system
 ```
@@ -122,7 +122,7 @@ helm install k8s-drain-surge deploy/helm/k8s-drain-surge \
 resource "helm_release" "k8s_drain_surge" {
   name       = "k8s-drain-surge"
   namespace  = "kube-system"
-  repository = "oci://ghcr.io/aeyrton/charts"
+  repository = "oci://ghcr.io/aeyrtonvs/charts"
   chart      = "k8s-drain-surge"
   version    = "<VERSION>"
 
@@ -156,7 +156,7 @@ All configuration is done through the Helm `values.yaml`:
 For Windows workloads that take longer to start, increase the timeout:
 
 ```bash
-helm install k8s-drain-surge oci://ghcr.io/aeyrton/charts/k8s-drain-surge \
+helm install k8s-drain-surge oci://ghcr.io/aeyrtonvs/charts/k8s-drain-surge \
   --namespace kube-system \
   --set controller.readinessTimeout=15m
 ```

@@ -1,4 +1,4 @@
-IMG ?= ghcr.io/aeyrton/k8s-drain-surge
+IMG ?= ghcr.io/aeyrtonvs/k8s-drain-surge
 TAG ?= latest
 
 .PHONY: build test vet fmt docker-build docker-push helm-package clean
@@ -25,7 +25,7 @@ helm-package:
 	helm package deploy/helm/k8s-drain-surge -d bin/
 
 helm-push: helm-package
-	helm push bin/k8s-drain-surge-*.tgz oci://ghcr.io/aeyrton/charts
+	helm push bin/k8s-drain-surge-*.tgz oci://ghcr.io/aeyrtonvs/charts
 
 clean:
 	rm -rf bin/
