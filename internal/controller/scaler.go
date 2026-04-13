@@ -108,22 +108,31 @@ func requirementsMatch(pdbReqs, workloadReqs []labels.Requirement) bool {
 	return true
 }
 
-// CheckHPACompatibility checks if an HPA targets the workload and if maxReplicas allows surge.
-// Returns (compatible, hpaExists, error).
-func CheckHPACompatibility(ctx context.Context, c client.Client, namespace, workloadName, workloadKind string) (bool, bool, error) {
+// FindMatchingHPA finds the HPA targeting the given workload.
+// Returns the HPA if found, nil otherwise.
+func FindMatchingHPA(ctx context.Context, c client.Client, namespace, workloadName, workloadKind string) (*autoscalingv2.HorizontalPodAutoscaler, error) {
 	var hpaList autoscalingv2.HorizontalPodAutoscalerList
 	if err := c.List(ctx, &hpaList, client.InNamespace(namespace)); err != nil {
-		return false, false, fmt.Errorf("list HPAs: %w", err)
+		return nil, fmt.Errorf("list HPAs: %w", err)
 	}
 
 	for i := range hpaList.Items {
 		hpa := &hpaList.Items[i]
 		ref := hpa.Spec.ScaleTargetRef
 		if ref.Name == workloadName && ref.Kind == workloadKind {
-			return hpa.Spec.MaxReplicas > 1, true, nil
+			return hpa, nil
 		}
 	}
-	return true, false, nil
+	return nil, nil
+}
+
+// PatchHPAMinReplicas patches the HPA's minReplicas to the given value.
+func PatchHPAMinReplicas(ctx context.Context, c client.Client, namespace, hpaName string, minReplicas int32) error {
+	patch := []byte(fmt.Sprintf(`{"spec":{"minReplicas":%d}}`, minReplicas))
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+	hpa.Name = hpaName
+	hpa.Namespace = namespace
+	return c.Patch(ctx, hpa, client.RawPatch(types.MergePatchType, patch))
 }
 
 // FindReadyPodOnOtherNode returns true if there is a Ready pod matching the selector
