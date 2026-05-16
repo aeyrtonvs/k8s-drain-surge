@@ -12,13 +12,16 @@ type DrainTaint struct {
 }
 
 type Config struct {
-	DrainTaints       []DrainTaint
-	EnabledAnnotation string
-	RequeueInterval   time.Duration
-	ReadinessTimeout  time.Duration
-	LeaderElect       bool
-	MetricsAddr       string
-	HealthAddr        string
+	DrainTaints             []DrainTaint
+	EnabledAnnotation       string
+	RequeueInterval         time.Duration
+	ReadinessTimeout        time.Duration
+	LeaderElect             bool
+	MetricsAddr             string
+	HealthAddr              string
+	RestartSurgeEnabled     bool
+	RestartSurgeGracePeriod time.Duration
+	RestartSurgeTimeout     time.Duration
 }
 
 func DefaultDrainTaints() []DrainTaint {
@@ -40,6 +43,9 @@ func Parse() (*Config, error) {
 	flag.BoolVar(&cfg.LeaderElect, "leader-elect", true, "Enable leader election for HA")
 	flag.StringVar(&cfg.MetricsAddr, "metrics-addr", ":8080", "Prometheus metrics bind address")
 	flag.StringVar(&cfg.HealthAddr, "health-addr", ":8081", "Health probe bind address")
+	flag.BoolVar(&cfg.RestartSurgeEnabled, "restart-surge-enabled", false, "Enable restart-surge protection for Argo Rollouts blocked by PDB during restart")
+	flag.DurationVar(&cfg.RestartSurgeGracePeriod, "restart-surge-grace-period", 60*time.Second, "Grace period after spec.restartAt before triggering restart-surge (lets Argo restart normally when PDB allows)")
+	flag.DurationVar(&cfg.RestartSurgeTimeout, "restart-surge-timeout", 10*time.Minute, "Timeout for the full restart-surge operation")
 	flag.Parse()
 
 	if err := cfg.Validate(); err != nil {
@@ -64,6 +70,14 @@ func (c *Config) Validate() error {
 	}
 	if c.EnabledAnnotation == "" {
 		return fmt.Errorf("--enabled-annotation must not be empty")
+	}
+	if c.RestartSurgeEnabled {
+		if c.RestartSurgeGracePeriod <= 0 {
+			return fmt.Errorf("--restart-surge-grace-period must be positive, got %s", c.RestartSurgeGracePeriod)
+		}
+		if c.RestartSurgeTimeout <= c.RestartSurgeGracePeriod {
+			return fmt.Errorf("--restart-surge-timeout (%s) must be greater than --restart-surge-grace-period (%s)", c.RestartSurgeTimeout, c.RestartSurgeGracePeriod)
+		}
 	}
 	return nil
 }

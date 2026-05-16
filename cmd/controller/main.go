@@ -70,11 +70,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	var restartReconciler *controller.RolloutReconciler
+	if cfg.RestartSurgeEnabled {
+		restartReconciler = &controller.RolloutReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorderFor(controller.ControllerName),
+			Config:   cfg,
+		}
+		if err := restartReconciler.SetupWithManager(mgr); err != nil {
+			log.Error(err, "unable to create rollout restart-surge controller")
+			os.Exit(1)
+		}
+		log.Info("restart-surge protection enabled")
+	}
+
 	go func() {
 		<-mgr.Elected()
 		ctx := context.Background()
 		if err := reconciler.RecoverOrphans(ctx); err != nil {
 			log.Error(err, "orphan recovery failed")
+		}
+		if restartReconciler != nil {
+			if err := restartReconciler.RecoverOrphans(ctx); err != nil {
+				log.Error(err, "restart-surge orphan recovery failed")
+			}
 		}
 	}()
 
