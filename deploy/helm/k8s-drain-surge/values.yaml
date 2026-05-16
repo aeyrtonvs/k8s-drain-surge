@@ -1,0 +1,51 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/aeyrtonvs/k8s-drain-surge
+  pullPolicy: IfNotPresent
+  tag: ""
+
+controller:
+  drainTaints:
+    - key: "karpenter.sh/disrupted"
+      effect: "NoSchedule"
+    - key: "ToBeDeletedByClusterAutoscaler"
+      effect: "NoSchedule"
+    - key: "node.kubernetes.io/unschedulable"
+      effect: "NoSchedule"
+  readinessTimeout: "10m"
+  requeueInterval: "5s"
+  leaderElect: true
+  metricsPort: 8080
+  healthPort: 8081
+  # Restart-surge protects single-replica Argo Rollouts whose `kubectl argo
+  # rollouts restart` is blocked indefinitely by a `minAvailable: 1` PDB
+  # (Argo's PodRestarter uses the eviction API). Disabled by default; only
+  # useful when you run Argo Rollouts. See CLAUDE.md ➜ Restart-surge state
+  # machine.
+  restartSurge:
+    enabled: false
+    gracePeriod: "60s"
+    timeout: "10m"
+
+nodeSelector:
+  kubernetes.io/os: linux
+
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
+
+priorityClassName: system-cluster-critical
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

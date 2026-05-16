@@ -1,0 +1,20 @@
+{
+  "name": "k8s-drain-surge",
+  "image": "golang:1.22-bookworm",
+  "remoteUser": "root",
+  "workspaceFolder": "/workspaces/k8s-drain-surge",
+
+  "mounts": [
+    "source=k8s-drain-surge-gomodcache,target=/go/pkg/mod,type=volume",
+    "source=k8s-drain-surge-gobuildcache,target=/root/.cache/go-build,type=volume"
+  ],
+
+  "onCreateCommand": "apt-get update && apt-get install -y --no-install-recommends make && rm -rf /var/lib/apt/lists/*",
+  "postCreateCommand": "bash .devcontainer/bootstrap.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"]
+    }
+  }
+}
