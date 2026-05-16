@@ -533,8 +533,12 @@ func TestRestartSurge_HPA_StaleRolloutCache(t *testing.T) {
 	if err := c.Get(ctx, req.NamespacedName, &afterSecond); err != nil {
 		t.Fatalf("get rollout after 2: %v", err)
 	}
+	// The re-entry guard must not write "2" (the post-surge min) as the new
+	// baseline. Annotation is "" here because we explicitly rolled the
+	// Rollout back to simulate the stale cache; in production the watch
+	// would land with the real value ("1") soon after.
 	if got := afterSecond.Annotations[AnnotationHPAOriginalMinReplicas]; got == "2" {
-		t.Fatalf("HPA original-min poisoned by stale-cache re-entry: got %q", got)
+		t.Fatalf("HPA original-min poisoned by stale-cache re-entry: got %q (expected \"\" or \"1\", never \"2\")", got)
 	}
 	var hpaAfterSecond autoscalingv2.HorizontalPodAutoscaler
 	if err := c.Get(ctx, types.NamespacedName{Name: "app-hpa", Namespace: "default"}, &hpaAfterSecond); err != nil {
