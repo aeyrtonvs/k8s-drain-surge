@@ -21,6 +21,9 @@ const (
 	LogFieldDeployment  = "deployment"
 	LogFieldDrainNode   = "drainNode"
 	LogFieldRestartAt   = "restartAt"
+
+	LogFieldRolloutPhase   = "rolloutPhase"
+	LogFieldRolloutMessage = "rolloutMessage"
 )
 
 // Field index keys registered on the controller-runtime cache.

@@ -95,6 +95,25 @@ func (r *RolloutWorkload) IsStable() bool {
 	return r.Rollout.Status.Phase == rolloutsv1alpha1.RolloutPhaseHealthy
 }
 
+// argoRestartingMessage is the status.message Argo Rollouts emits while a
+// restart is pending. Set exclusively in upstream's CalculateRolloutPhase when
+// spec.RestartAt != nil && status.RestartedAt has not caught up
+// (utils/rollout/rolloututil.go in argoproj/argo-rollouts).
+const argoRestartingMessage = "rollout is restarting"
+
+// IsStableForRestart relaxes IsStable for the restart-surge path: Argo flips
+// status.phase to Progressing the moment spec.restartAt is set, so requiring
+// Healthy would be self-defeating. We accept Healthy, or Progressing with the
+// exact restart message — which upstream only sets for pending restarts, not
+// for user-driven deploys.
+func (r *RolloutWorkload) IsStableForRestart() bool {
+	if r.Rollout.Status.Phase == rolloutsv1alpha1.RolloutPhaseHealthy {
+		return true
+	}
+	return r.Rollout.Status.Phase == rolloutsv1alpha1.RolloutPhaseProgressing &&
+		r.Rollout.Status.Message == argoRestartingMessage
+}
+
 func (r *RolloutWorkload) CanSurge() bool { return true }
 
 func (r *RolloutWorkload) GetPodSelector() labels.Selector {
