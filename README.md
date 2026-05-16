@@ -278,6 +278,7 @@ spec:
 | "HPA maxReplicas=1" | HPA prevents scaling above 1 | Set `maxReplicas >= 2` or remove HPA |
 | Replicas stuck at 2 | Controller crashed mid-operation | Restarts recover automatically; manual fix below |
 | Timeout on Windows pods | Windows nodes take 12-17min to start | Set `--readiness-timeout 15m` or higher |
+| Short-lived extra pod appears during scale-down | ReplicaSet controller observes `desired=2` briefly while the old pod terminates and creates a replacement; deleted on the next reconcile when replicas are patched back | Expected. Scaling down before the old pod terminates would risk deleting the surge pod instead. |
 
 Manual cleanup if replicas are stuck:
 
