@@ -1,0 +1,70 @@
+# Manual test for restart-surge: a single-replica Argo Rollout protected by
+# a strict PDB (minAvailable: 1). Without the controller, `kubectl argo
+# rollouts restart` on this resource would hang indefinitely (Argo's
+# PodRestarter retries eviction every ~30s; PDB rejects every attempt).
+#
+# Test procedure:
+#   1. Apply this manifest.
+#   2. Run controller with --restart-surge-enabled=true (or set
+#      restartSurge.enabled=true in the Helm chart).
+#   3. kubectl argo rollouts restart test-restart-surge -n <ns>
+#   4. Observe:
+#        - replicas patched 1 → 2 (or HPA minReplicas if one targets the Rollout)
+#        - surge pod becomes Ready
+#        - Argo PodRestarter evicts the original pod (PDB now permits it)
+#        - replicas restored to 1
+#        - all k8s-drain-surge.io/restart-surge-* annotations cleared
+#   5. Events on the Rollout: RestartSurgeStart, RestartSurgeReady,
+#      RestartSurgeScaleDown, RestartSurgeComplete.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: test-restart-surge
+  annotations:
+    k8s-drain-surge.io/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-restart-surge
+  template:
+    metadata:
+      labels:
+        app: test-restart-surge
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 3
+  strategy:
+    blueGreen:
+      activeService: test-restart-surge-active
+      autoPromotionEnabled: true
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: test-restart-surge-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: test-restart-surge
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-restart-surge-active
+spec:
+  selector:
+    app: test-restart-surge
+  ports:
+    - port: 80
+      targetPort: 80
