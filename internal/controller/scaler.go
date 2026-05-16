@@ -127,12 +127,33 @@ func FindMatchingHPA(ctx context.Context, c client.Client, namespace, workloadNa
 }
 
 // PatchHPAMinReplicas patches the HPA's minReplicas to the given value.
+// Callers MUST persist the workload annotations recording the pre-surge
+// minReplicas (via wl.Patch) BEFORE invoking this, so the workload is the
+// authoritative record of the original value if a subsequent reconcile fires
+// before the workload watch propagates.
 func PatchHPAMinReplicas(ctx context.Context, c client.Client, namespace, hpaName string, minReplicas int32) error {
 	patch := []byte(fmt.Sprintf(`{"spec":{"minReplicas":%d}}`, minReplicas))
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{}
 	hpa.Name = hpaName
 	hpa.Namespace = namespace
 	return c.Patch(ctx, hpa, client.RawPatch(types.MergePatchType, patch))
+}
+
+// HPAMinReplicasOrDefault returns hpa.Spec.MinReplicas, defaulting to 1
+// (the autoscaling/v2 default when the field is unset).
+func HPAMinReplicasOrDefault(hpa *autoscalingv2.HorizontalPodAutoscaler) int32 {
+	if hpa.Spec.MinReplicas != nil {
+		return *hpa.Spec.MinReplicas
+	}
+	return 1
+}
+
+// IsHPAAtMinReplicas reports whether the HPA's minReplicas already meets or
+// exceeds target. Used as a re-entry guard against stale workload caches:
+// if the HPA was already surged by a prior reconcile, the current value is
+// our work-in-progress, not the pre-surge baseline.
+func IsHPAAtMinReplicas(hpa *autoscalingv2.HorizontalPodAutoscaler, target int32) bool {
+	return hpa.Spec.MinReplicas != nil && *hpa.Spec.MinReplicas >= target
 }
 
 // FindReadyPodOnOtherNode returns true if there is a Ready pod matching the selector
