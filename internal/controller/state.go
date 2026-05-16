@@ -20,19 +20,27 @@ const (
 )
 
 const (
-	AnnotationEnabled             = "k8s-drain-surge.io/enabled"
-	AnnotationDrainState          = "k8s-drain-surge.io/drain-state"
-	AnnotationOriginalReplicas    = "k8s-drain-surge.io/original-replicas"
-	AnnotationDrainNode           = "k8s-drain-surge.io/drain-node"
-	AnnotationDrainStart          = "k8s-drain-surge.io/drain-start"
-	AnnotationHPAName             = "k8s-drain-surge.io/hpa-name"
+	AnnotationEnabled                = "k8s-drain-surge.io/enabled"
+	AnnotationDrainState             = "k8s-drain-surge.io/drain-state"
+	AnnotationOriginalReplicas       = "k8s-drain-surge.io/original-replicas"
+	AnnotationDrainNode              = "k8s-drain-surge.io/drain-node"
+	AnnotationDrainStart             = "k8s-drain-surge.io/drain-start"
+	AnnotationHPAName                = "k8s-drain-surge.io/hpa-name"
 	AnnotationHPAOriginalMinReplicas = "k8s-drain-surge.io/hpa-original-min-replicas"
+
+	// Restart-surge annotations. Parallel to drain annotations; the two
+	// operations are mutually exclusive on a given workload (state machine
+	// guards prevent overlap), but use disjoint state keys so it is always
+	// clear which operation owns the workload.
+	AnnotationRestartSurgeState = "k8s-drain-surge.io/restart-surge-state"
+	AnnotationRestartSurgeStart = "k8s-drain-surge.io/restart-surge-start"
 )
 
 const reasonNewRSAvailable = "NewReplicaSetAvailable"
 
-// drainAnnotationKeys lists all annotation keys managed by this controller,
-// used for bulk cleanup.
+// drainAnnotationKeys enumerates every annotation this controller owns.
+// patchReplicasAndAnnotations nullifies any key in this slice that is
+// absent from a given patch, so omissions silently delete on-disk state.
 var drainAnnotationKeys = []string{
 	AnnotationDrainState,
 	AnnotationOriginalReplicas,
@@ -40,19 +48,57 @@ var drainAnnotationKeys = []string{
 	AnnotationDrainStart,
 	AnnotationHPAName,
 	AnnotationHPAOriginalMinReplicas,
+	AnnotationRestartSurgeState,
+	AnnotationRestartSurgeStart,
 }
 
-// clearDrainAnnotations removes all controller-managed annotations from the map.
+// restartSurgeFullKeys are cleared on a successful restart-surge cycle or
+// full abort: state plus shared bookkeeping the operation owned while in
+// flight (original replicas, HPA pointer/min).
+var restartSurgeFullKeys = []string{
+	AnnotationRestartSurgeState,
+	AnnotationRestartSurgeStart,
+	AnnotationOriginalReplicas,
+	AnnotationHPAName,
+	AnnotationHPAOriginalMinReplicas,
+}
+
+// restartSurgeExclusiveKeys hold only the restart-surge state markers,
+// excluding shared bookkeeping. Used when yielding to a drain that started
+// mid-operation so the drain's shared keys stay intact.
+var restartSurgeExclusiveKeys = []string{
+	AnnotationRestartSurgeState,
+	AnnotationRestartSurgeStart,
+}
+
 func clearDrainAnnotations(annotations map[string]string) {
 	for _, key := range drainAnnotationKeys {
 		delete(annotations, key)
 	}
 }
 
-// parseDrainStart parses the drain start timestamp from annotations.
-// Returns zero time and false if not present or invalid.
+func clearRestartSurgeAnnotations(annotations map[string]string) {
+	for _, key := range restartSurgeFullKeys {
+		delete(annotations, key)
+	}
+}
+
+func clearRestartSurgeExclusiveAnnotations(annotations map[string]string) {
+	for _, key := range restartSurgeExclusiveKeys {
+		delete(annotations, key)
+	}
+}
+
 func parseDrainStart(annotations map[string]string) (time.Time, bool) {
-	s, ok := annotations[AnnotationDrainStart]
+	return parseRFC3339Annotation(annotations, AnnotationDrainStart)
+}
+
+func parseRestartSurgeStart(annotations map[string]string) (time.Time, bool) {
+	return parseRFC3339Annotation(annotations, AnnotationRestartSurgeStart)
+}
+
+func parseRFC3339Annotation(annotations map[string]string, key string) (time.Time, bool) {
+	s, ok := annotations[key]
 	if !ok || s == "" {
 		return time.Time{}, false
 	}
