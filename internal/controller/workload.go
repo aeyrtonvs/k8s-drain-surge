@@ -11,7 +11,20 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// ctxWithWorkload returns a context carrying a logger annotated with the
+// canonical workload fields (name, namespace, kind).
+func ctxWithWorkload(ctx context.Context, wl DrainableWorkload) context.Context {
+	meta := wl.GetObjectMeta()
+	logger := log.FromContext(ctx).WithValues(
+		LogFieldWorkload, meta.Name,
+		LogFieldNamespace, meta.Namespace,
+		LogFieldKind, wl.GetObjectKind(),
+	)
+	return log.IntoContext(ctx, logger)
+}
 
 // DrainableWorkload abstracts the differences between Argo Rollouts and Deployments.
 type DrainableWorkload interface {
