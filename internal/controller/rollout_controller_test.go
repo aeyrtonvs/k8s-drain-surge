@@ -85,6 +85,23 @@ func newRollout(name, namespace string) *rolloutsv1alpha1.Rollout {
 	}
 }
 
+// setRestartPending stamps the Rollout the way upstream Argo Rollouts does
+// while a restart is pending: spec.RestartAt set, status.RestartedAt unset,
+// phase flipped to Progressing with status.message. Defaults to the canonical
+// "rollout is restarting" sentinel (see argoproj/argo-rollouts
+// utils/rollout/rolloututil.go); pass a different message to simulate a
+// concurrent user-driven deploy.
+func setRestartPending(ro *rolloutsv1alpha1.Rollout, restartAt time.Time, msg ...string) {
+	m := argoRestartingMessage
+	if len(msg) > 0 {
+		m = msg[0]
+	}
+	t := metav1.NewTime(restartAt)
+	ro.Spec.RestartAt = &t
+	ro.Status.Phase = rolloutsv1alpha1.RolloutPhaseProgressing
+	ro.Status.Message = m
+}
+
 func newRolloutPod(name, namespace, appLabel string, created time.Time, ready bool) *corev1.Pod {
 	conds := []corev1.PodCondition{}
 	if ready {
@@ -124,8 +141,7 @@ func TestRestartSurge_NotOptedIn(t *testing.T) {
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
 	delete(ro.Annotations, AnnotationEnabled)
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-5*time.Minute))
 	pod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 	pdb := newRolloutPDB("app-pdb", "default", "app")
 
@@ -173,8 +189,7 @@ func TestRestartSurge_WithinGracePeriod(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-30 * time.Second))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-30*time.Second))
 	pod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 	pdb := newRolloutPDB("app-pdb", "default", "app")
 
@@ -206,8 +221,7 @@ func TestRestartSurge_NoPDB(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-5*time.Minute))
 	pod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 
 	r, c := newRolloutReconciler(now, ro, pod)
@@ -238,8 +252,7 @@ func TestRestartSurge_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-5*time.Minute))
 	oldPod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 	pdb := newRolloutPDB("app-pdb", "default", "app")
 
@@ -352,8 +365,7 @@ func TestRestartSurge_DrainTakesOver(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-5*time.Minute))
 	two := int32(2)
 	ro.Spec.Replicas = &two
 	ro.Annotations[AnnotationRestartSurgeState] = string(DrainStateScaledUp)
@@ -392,8 +404,7 @@ func TestRestartSurge_Timeout(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-1 * time.Hour))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-1*time.Hour))
 	two := int32(2)
 	ro.Spec.Replicas = &two
 	ro.Annotations[AnnotationRestartSurgeState] = string(DrainStateScaledUp)
@@ -425,8 +436,7 @@ func TestRestartSurge_HPA(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-5*time.Minute))
 	oldPod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 	pdb := newRolloutPDB("app-pdb", "default", "app")
 	minReplicas := int32(1)
@@ -469,8 +479,7 @@ func TestRestartSurge_HPAMaxTooLow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
+	setRestartPending(ro, now.Add(-5*time.Minute))
 	oldPod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 	pdb := newRolloutPDB("app-pdb", "default", "app")
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
@@ -493,6 +502,36 @@ func TestRestartSurge_HPAMaxTooLow(t *testing.T) {
 	}
 	if _, ok := got.Annotations[AnnotationRestartSurgeState]; ok {
 		t.Fatal("expected no restart-surge state when HPA maxReplicas is too low")
+	}
+}
+
+// TestRestartSurge_ProgressingForOtherReason: a Rollout in Progressing for a
+// reason other than a pending restart (e.g. a user-driven deploy in flight)
+// must NOT be surged — we only act when status.message matches Argo's
+// canonical "rollout is restarting" sentinel.
+func TestRestartSurge_ProgressingForOtherReason(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	ro := newRollout("app", "default")
+	setRestartPending(ro, now.Add(-5*time.Minute), "more replicas need to be updated")
+	oldPod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
+	pdb := newRolloutPDB("app-pdb", "default", "app")
+
+	r, c := newRolloutReconciler(now, ro, oldPod, pdb)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "default"}}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var got rolloutsv1alpha1.Rollout
+	if err := c.Get(ctx, req.NamespacedName, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, ok := got.Annotations[AnnotationRestartSurgeState]; ok {
+		t.Fatal("expected no restart-surge state when Rollout is Progressing for a non-restart reason")
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 1 {
+		t.Fatalf("expected replicas untouched (=1), got %v", got.Spec.Replicas)
 	}
 }
 
