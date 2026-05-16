@@ -34,6 +34,7 @@ type NodeReconciler struct {
 
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("node", req.Name)
+	ctx = log.IntoContext(ctx, logger)
 
 	var node corev1.Node
 	if err := r.Get(ctx, req.NamespacedName, &node); err != nil {
@@ -112,9 +113,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWorkload, nodeName string) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
 	meta := wl.GetObjectMeta()
-	logger = logger.WithValues("workload", meta.Name, "namespace", meta.Namespace, "kind", wl.GetObjectKind())
+	logger := log.FromContext(ctx).WithValues("workload", meta.Name, "namespace", meta.Namespace, "kind", wl.GetObjectKind())
+	ctx = log.IntoContext(ctx, logger)
 
 	annotations := meta.Annotations
 	if annotations == nil {
@@ -149,7 +150,7 @@ func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWork
 		}
 	} else {
 		if drainNode := annotations[AnnotationDrainNode]; drainNode != "" && drainNode != nodeName {
-			logger.Info("workload is being drained by another node", "otherNode", drainNode)
+			logger.V(1).Info("workload is being drained by another node", "otherNode", drainNode)
 			return ctrl.Result{}, nil
 		}
 	}
@@ -182,7 +183,7 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 		return ctrl.Result{}, err
 	}
 	if !hasPDB {
-		logger.Info("no matching PDB found, skipping workload")
+		logger.V(1).Info("no matching PDB found, skipping workload")
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "NoPDB", "No PodDisruptionBudget found matching workload pods — skipping drain surge")
 		return ctrl.Result{}, nil
 	}
@@ -296,7 +297,7 @@ func (r *NodeReconciler) handleWaitReady(ctx context.Context, wl DrainableWorklo
 		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 	}
 
-	logger.Info("waiting for new pod to become ready on another node")
+	logger.V(1).Info("waiting for new pod to become ready on another node")
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 }
 
@@ -452,18 +453,18 @@ func (r *NodeReconciler) shouldProcess(ctx context.Context, wl DrainableWorkload
 	}
 
 	if !wl.IsStable() {
-		logger.Info("workload is not stable, skipping")
+		logger.V(1).Info("workload is not stable, skipping")
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainSkipped", "Workload is not in a stable state — skipping drain surge")
 		return false
 	}
 
 	if drainNode := meta.Annotations[AnnotationDrainNode]; drainNode != "" && drainNode != nodeName {
-		logger.Info("workload is being drained by another node", "otherNode", drainNode)
+		logger.V(1).Info("workload is being drained by another node", "otherNode", drainNode)
 		return false
 	}
 
 	if !wl.CanSurge() {
-		logger.Info("workload strategy does not support surge, skipping")
+		logger.V(1).Info("workload strategy does not support surge, skipping")
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainSkipped", "Workload strategy does not support drain surge")
 		return false
 	}
@@ -474,7 +475,7 @@ func (r *NodeReconciler) shouldProcess(ctx context.Context, wl DrainableWorkload
 		return false
 	}
 	if hpa != nil && hpa.Spec.MaxReplicas <= 1 {
-		logger.Info("HPA maxReplicas is 1, cannot surge")
+		logger.V(1).Info("HPA maxReplicas is 1, cannot surge")
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainSkipped", "HPA maxReplicas=1 prevents drain surge")
 		return false
 	}
