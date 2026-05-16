@@ -160,9 +160,13 @@ func (r *RolloutReconciler) handleRestartPending(ctx context.Context, wl *Rollou
 		return ctrl.Result{}, nil
 	}
 
-	if !wl.IsStable() {
-		logger.V(1).Info("rollout not stable, skipping restart-surge")
-		r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "RestartSurgeSkipped", "Rollout not in a stable phase — skipping restart-surge")
+	if !wl.IsStableForRestart() {
+		phase, msg := wl.Rollout.Status.Phase, wl.Rollout.Status.Message
+		logger.V(1).Info("rollout not stable for restart-surge, skipping", LogFieldRolloutPhase, phase, LogFieldRolloutMessage, msg)
+		// Keep the event message stable so EventBroadcaster can aggregate
+		// repeats: phase/message change during a deploy and would otherwise
+		// produce one new event per requeue.
+		r.Recorder.Event(wl.Object(), corev1.EventTypeWarning, "RestartSurgeSkipped", "Rollout phase is not a pending restart — skipping restart-surge")
 		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 	}
 
