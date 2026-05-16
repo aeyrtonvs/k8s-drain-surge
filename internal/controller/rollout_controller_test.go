@@ -87,13 +87,19 @@ func newRollout(name, namespace string) *rolloutsv1alpha1.Rollout {
 
 // setRestartPending stamps the Rollout the way upstream Argo Rollouts does
 // while a restart is pending: spec.RestartAt set, status.RestartedAt unset,
-// phase flipped to Progressing with the canonical "rollout is restarting"
-// message (see argoproj/argo-rollouts utils/rollout/rolloututil.go).
-func setRestartPending(ro *rolloutsv1alpha1.Rollout, restartAt time.Time) {
+// phase flipped to Progressing with status.message. Defaults to the canonical
+// "rollout is restarting" sentinel (see argoproj/argo-rollouts
+// utils/rollout/rolloututil.go); pass a different message to simulate a
+// concurrent user-driven deploy.
+func setRestartPending(ro *rolloutsv1alpha1.Rollout, restartAt time.Time, msg ...string) {
+	m := argoRestartingMessage
+	if len(msg) > 0 {
+		m = msg[0]
+	}
 	t := metav1.NewTime(restartAt)
 	ro.Spec.RestartAt = &t
 	ro.Status.Phase = rolloutsv1alpha1.RolloutPhaseProgressing
-	ro.Status.Message = "rollout is restarting"
+	ro.Status.Message = m
 }
 
 func newRolloutPod(name, namespace, appLabel string, created time.Time, ready bool) *corev1.Pod {
@@ -507,12 +513,7 @@ func TestRestartSurge_ProgressingForOtherReason(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
 	ro := newRollout("app", "default")
-	restartAt := metav1.NewTime(now.Add(-5 * time.Minute))
-	ro.Spec.RestartAt = &restartAt
-	// Simulate a user-driven deploy mid-flight: phase=Progressing but for a
-	// different reason than a pending restart.
-	ro.Status.Phase = rolloutsv1alpha1.RolloutPhaseProgressing
-	ro.Status.Message = "more replicas need to be updated"
+	setRestartPending(ro, now.Add(-5*time.Minute), "more replicas need to be updated")
 	oldPod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
 	pdb := newRolloutPDB("app-pdb", "default", "app")
 
