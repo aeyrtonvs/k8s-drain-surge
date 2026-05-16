@@ -103,11 +103,22 @@ If your NodePool has `terminationGracePeriod` configured, it must be **greater**
 
 ### Devcontainer (recommended)
 
-Requires VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension, or any editor that supports the devcontainer spec.
+The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.22, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
 
-1. Open the project in VS Code
-2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**
-3. The container starts with Go 1.22 and runs `go mod tidy` automatically
+Requirements: VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (or any editor that supports the devcontainer spec), and Docker.
+
+Setup:
+
+1. Open the project in VS Code.
+2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**.
+3. First open builds the image (`golang:1.22-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
+
+What's persisted across rebuilds:
+
+- `/go/pkg/mod` (module cache) and `/root/.cache/go-build` (build cache) are mounted on named Docker volumes (`k8s-drain-surge-gomodcache`, `k8s-drain-surge-gobuildcache`), so `go test` and `go build` stay warm.
+- If a cache ever gets corrupted: `docker volume rm k8s-drain-surge-gomodcache k8s-drain-surge-gobuildcache` and rebuild.
+
+Inside the container, all `make` targets work directly. CI parity is the contract — anything green in the devcontainer is green in CI. If bootstrap fails (e.g. a broken test on `master`), you still get a shell — fix it and re-run `bash .devcontainer/bootstrap.sh`.
 
 ### Make targets
 

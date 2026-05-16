@@ -37,6 +37,13 @@ spec:
             - --requeue-interval={{ .Values.controller.requeueInterval }}
             - --metrics-addr=:{{ .Values.controller.metricsPort }}
             - --health-addr=:{{ .Values.controller.healthPort }}
+            {{- with .Values.controller.restartSurge }}
+            - --restart-surge-enabled={{ .enabled }}
+            {{- if .enabled }}
+            - --restart-surge-grace-period={{ .gracePeriod }}
+            - --restart-surge-timeout={{ .timeout }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.controller.metricsPort }}
