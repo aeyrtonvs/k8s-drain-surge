@@ -1,8 +1,9 @@
 # k8s-drain-surge
 
-Zero-downtime node drain controller for single-replica workloads in Kubernetes.
+Zero-downtime controller for single-replica workloads in Kubernetes. Two protections:
 
-When a node is tainted for drain (by Karpenter, Cluster Autoscaler, or manual `kubectl drain`), this controller temporarily scales opted-in workloads from 1 to 2 replicas, waits for the new pod to be ready on a different node, and lets the eviction proceed safely.
+- **Drain-surge** (always on) — when a node is tainted for drain (by Karpenter, Cluster Autoscaler, or manual `kubectl drain`), temporarily scales opted-in workloads 1→2 replicas, waits for the new pod to be Ready on a different node, lets the eviction proceed, then scales back.
+- **Restart-surge** (opt-in via `--restart-surge-enabled`) — when an Argo Rollout's `kubectl argo rollouts restart` (or the dashboard "Restart" button) is stuck because Argo's PodRestarter uses the eviction API and a `minAvailable: 1` PDB rejects it indefinitely, surges 1→2 so the eviction can proceed, then scales back once Argo finishes. Argo Rollouts only — Deployments don't need this because `kubectl rollout restart deployment/...` uses delete (not eviction) and bypasses PDBs.
 
 Supports **Argo Rollouts** (Canary and Blue-Green) and **Deployments**.
 
@@ -31,6 +32,23 @@ The controller watches for nodes with drain taints and runs a state machine per 
 ```
 
 The controller is **opt-in only**. It will not touch any workload unless you explicitly annotate it.
+
+## Restart-surge (opt-in)
+
+Argo Rollouts' `restart` is implemented in-place: it evicts existing pods via the eviction API (no new ReplicaSet, no template change). With one replica and a `minAvailable: 1` PDB, every eviction attempt fails with 429 and Argo retries every ~30 seconds forever. The Rollout sits in `Progressing` with `message: rollout is restarting`, but the pod is never replaced.
+
+When you enable `--restart-surge-enabled=true` (or `controller.restartSurge.enabled=true` in the Helm chart), the controller:
+
+```
+1. Sees spec.restartAt set, status.restartedAt not caught up, and an old pod still present
+2. Waits a grace period (default 60s) in case Argo finishes on its own
+3. Scales the workload 1 -> 2 (or patches HPA minReplicas)
+4. Waits for the surge pod to be Ready
+5. With 2 pods Ready, the PDB now permits Argo's PodRestarter to evict the old one
+6. Once Argo reports completion (status.restartedAt == spec.restartAt), scales back to 1
+```
+
+Uses the same `k8s-drain-surge.io/enabled: "true"` opt-in annotation as drain-surge. Same PDB requirement.
 
 ## What you need to do
 
@@ -183,6 +201,9 @@ All configuration is done through the Helm `values.yaml`:
 | `controller.leaderElect` | `true` | Enable leader election |
 | `controller.metricsPort` | `8080` | Prometheus metrics port |
 | `controller.healthPort` | `8081` | Health/readiness probe port |
+| `controller.restartSurge.enabled` | `false` | Enable restart-surge protection (Argo Rollouts only) |
+| `controller.restartSurge.gracePeriod` | `60s` | Wait this long after `spec.restartAt` before surging (lets Argo finish unaided when PDB permits) |
+| `controller.restartSurge.timeout` | `10m` | Total budget for one restart-surge operation |
 | `priorityClassName` | `system-cluster-critical` | Pod priority class |
 | `nodeSelector` | `kubernetes.io/os: linux` | Node selector for controller pods |
 
@@ -290,6 +311,7 @@ spec:
 | Replicas stuck at 2 | Controller crashed mid-operation | Restarts recover automatically; manual fix below |
 | Timeout on Windows pods | Windows nodes take 12-17min to start | Set `--readiness-timeout 15m` or higher |
 | Short-lived extra pod appears during scale-down | ReplicaSet controller observes `desired=2` briefly while the old pod terminates and creates a replacement; deleted on the next reconcile when replicas are patched back | Expected. Scaling down before the old pod terminates would risk deleting the surge pod instead. |
+| `kubectl argo rollouts restart` on single-replica Rollout hangs forever | Argo's PodRestarter uses eviction API; PDB `minAvailable: 1` rejects every attempt | Enable restart-surge (`--restart-surge-enabled=true`), or unblock manually by clearing `spec.restartAt` and changing `spec.template` instead |
 
 Manual cleanup if replicas are stuck:
 
