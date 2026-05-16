@@ -49,13 +49,15 @@ func newReconciler(objs ...client.Object) (*NodeReconciler, client.Client) {
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&appsv1.Deployment{}).
-		WithIndex(&corev1.Pod{}, "spec.nodeName", func(o client.Object) []string {
+		WithIndex(&corev1.Pod{}, IndexPodNodeName, func(o client.Object) []string {
 			pod := o.(*corev1.Pod)
 			if pod.Spec.NodeName == "" {
 				return nil
 			}
 			return []string{pod.Spec.NodeName}
 		}).
+		WithIndex(&rolloutsv1alpha1.Rollout{}, IndexWorkloadDrainNode, indexByDrainNodeAnnotation).
+		WithIndex(&appsv1.Deployment{}, IndexWorkloadDrainNode, indexByDrainNodeAnnotation).
 		Build()
 
 	return &NodeReconciler{
