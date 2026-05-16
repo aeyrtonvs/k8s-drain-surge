@@ -214,17 +214,14 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 		// Re-entry guard: if the HPA is already at the surge target, a prior
 		// reconcile already patched it — we are seeing a stale workload cache.
 		// Treat the current minReplicas as our work-in-progress, not as
-		// "original", and requeue so the next reconcile sees the propagated
-		// workload annotations.
-		if hpa.Spec.MinReplicas != nil && *hpa.Spec.MinReplicas >= originalReplicas+1 {
+		// "original", and requeue quickly so the next reconcile sees the
+		// propagated workload annotations (cache typically catches up in ms).
+		if IsHPAAtMinReplicas(hpa, originalReplicas+1) {
 			logger.V(1).Info("HPA already at surge target, deferring to next reconcile", LogFieldHPA, hpa.Name, LogFieldMinReplicas, *hpa.Spec.MinReplicas)
-			return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
+			return ctrl.Result{RequeueAfter: 250 * time.Millisecond}, nil
 		}
 
-		originalMin := int32(1)
-		if hpa.Spec.MinReplicas != nil {
-			originalMin = *hpa.Spec.MinReplicas
-		}
+		originalMin := HPAMinReplicasOrDefault(hpa)
 		meta.Annotations[AnnotationHPAName] = hpa.Name
 		meta.Annotations[AnnotationHPAOriginalMinReplicas] = strconv.Itoa(int(originalMin))
 
