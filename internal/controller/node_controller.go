@@ -211,23 +211,38 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 			return ctrl.Result{}, nil
 		}
 
-		originalMin := int32(1)
-		if hpa.Spec.MinReplicas != nil {
-			originalMin = *hpa.Spec.MinReplicas
+		// Re-entry guard: if the HPA is already at the surge target, a prior
+		// reconcile already patched it — we are seeing a stale workload cache.
+		// Treat the current minReplicas as our work-in-progress, not as
+		// "original", and requeue quickly so the next reconcile sees the
+		// propagated workload annotations (cache typically catches up in ms).
+		if IsHPAAtMinReplicas(hpa, originalReplicas+1) {
+			logger.V(1).Info("HPA already at surge target, deferring to next reconcile", LogFieldHPA, hpa.Name, LogFieldMinReplicas, *hpa.Spec.MinReplicas)
+			return ctrl.Result{RequeueAfter: 250 * time.Millisecond}, nil
 		}
+
+		originalMin := HPAMinReplicasOrDefault(hpa)
 		meta.Annotations[AnnotationHPAName] = hpa.Name
 		meta.Annotations[AnnotationHPAOriginalMinReplicas] = strconv.Itoa(int(originalMin))
 
+		// Persist annotations BEFORE patching the HPA: if the HPA patch fails
+		// or the next reconcile fires on a stale workload cache, the workload
+		// annotations are the source of truth for HPAOriginalMinReplicas. The
+		// HPA-already-at-target guard above handles the inverse case.
+		if err := wl.Patch(ctx, r.Client); err != nil {
+			return ctrl.Result{}, fmt.Errorf("patch workload for scale-up: %w", err)
+		}
 		if err := PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpa.Name, originalReplicas+1); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch HPA minReplicas for scale-up: %w", err)
 		}
 		logger.Info("patched HPA minReplicas for surge", LogFieldHPA, hpa.Name, LogFieldFrom, originalMin, LogFieldTo, originalReplicas+1)
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Patched HPA %s minReplicas from %d to %d for node drain on %s", hpa.Name, originalMin, originalReplicas+1, nodeName)
-	} else {
-		wl.SetReplicas(originalReplicas + 1)
-		logger.Info("scaled up workload", LogFieldFrom, originalReplicas, LogFieldTo, originalReplicas+1)
-		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Scaled up from %d to %d for node drain on %s", originalReplicas, originalReplicas+1, nodeName)
+		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 	}
+
+	wl.SetReplicas(originalReplicas + 1)
+	logger.Info("scaled up workload", LogFieldFrom, originalReplicas, LogFieldTo, originalReplicas+1)
+	r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Scaled up from %d to %d for node drain on %s", originalReplicas, originalReplicas+1, nodeName)
 
 	if err := wl.Patch(ctx, r.Client); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch workload for scale-up: %w", err)

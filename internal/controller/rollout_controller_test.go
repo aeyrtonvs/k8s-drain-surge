@@ -474,6 +474,81 @@ func TestRestartSurge_HPA(t *testing.T) {
 	}
 }
 
+// TestRestartSurge_HPA_StaleRolloutCache: simulates the production race where
+// the first reconcile patches the HPA and the Rollout, but the second
+// reconcile fires before the watch refreshes the Rollout in the cache. The
+// second reconcile sees a Rollout without restart-surge annotations and an
+// HPA already at minReplicas=2 — it must not capture 2 as the "original"
+// minReplicas (which would later be restored, leaving the HPA permanently
+// scaled up).
+func TestRestartSurge_HPA_StaleRolloutCache(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	ro := newRollout("app", "default")
+	setRestartPending(ro, now.Add(-5*time.Minute))
+	oldPod := newRolloutPod("app-old", "default", "app", now.Add(-1*time.Hour), true)
+	pdb := newRolloutPDB("app-pdb", "default", "app")
+	minReplicas := int32(1)
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-hpa", Namespace: "default"},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{Kind: "Rollout", Name: "app"},
+			MinReplicas:    &minReplicas,
+			MaxReplicas:    5,
+		},
+	}
+
+	r, c := newRolloutReconciler(now, ro, oldPod, pdb, hpa)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "default"}}
+
+	// First reconcile: should patch HPA min 1→2 and annotate Rollout.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile 1: %v", err)
+	}
+	var afterFirst rolloutsv1alpha1.Rollout
+	if err := c.Get(ctx, req.NamespacedName, &afterFirst); err != nil {
+		t.Fatalf("get rollout after 1: %v", err)
+	}
+	if afterFirst.Annotations[AnnotationHPAOriginalMinReplicas] != "1" {
+		t.Fatalf("after reconcile 1: expected HPAOriginalMinReplicas=1, got %q", afterFirst.Annotations[AnnotationHPAOriginalMinReplicas])
+	}
+
+	// Simulate stale cache: roll the Rollout back to its pre-reconcile state
+	// in the client (annotations cleared) while leaving the HPA at min=2 (the
+	// API server already saw that patch). This is the exact window where a
+	// reconcile can re-enter handleRestartPending and re-read the HPA.
+	stale := ro.DeepCopy()
+	stale.ResourceVersion = afterFirst.ResourceVersion
+	if err := c.Update(ctx, stale); err != nil {
+		t.Fatalf("rollback rollout: %v", err)
+	}
+
+	// Second reconcile: must defer (not write HPAOriginalMinReplicas=2 nor
+	// re-patch the HPA). The HPA-already-at-target guard makes the handler
+	// idempotent on stale-cache re-entry.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile 2: %v", err)
+	}
+	var afterSecond rolloutsv1alpha1.Rollout
+	if err := c.Get(ctx, req.NamespacedName, &afterSecond); err != nil {
+		t.Fatalf("get rollout after 2: %v", err)
+	}
+	// The re-entry guard must not write "2" (the post-surge min) as the new
+	// baseline. Annotation is "" here because we explicitly rolled the
+	// Rollout back to simulate the stale cache; in production the watch
+	// would land with the real value ("1") soon after.
+	if got := afterSecond.Annotations[AnnotationHPAOriginalMinReplicas]; got == "2" {
+		t.Fatalf("HPA original-min poisoned by stale-cache re-entry: got %q (expected \"\" or \"1\", never \"2\")", got)
+	}
+	var hpaAfterSecond autoscalingv2.HorizontalPodAutoscaler
+	if err := c.Get(ctx, types.NamespacedName{Name: "app-hpa", Namespace: "default"}, &hpaAfterSecond); err != nil {
+		t.Fatalf("get hpa: %v", err)
+	}
+	if hpaAfterSecond.Spec.MinReplicas == nil || *hpaAfterSecond.Spec.MinReplicas != 2 {
+		t.Fatalf("HPA minReplicas should remain at surge target (2), got %v", hpaAfterSecond.Spec.MinReplicas)
+	}
+}
+
 // TestRestartSurge_HPAMaxTooLow: HPA with maxReplicas<2 prevents surge.
 func TestRestartSurge_HPAMaxTooLow(t *testing.T) {
 	ctx := context.Background()
