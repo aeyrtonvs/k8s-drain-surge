@@ -33,7 +33,7 @@ type NodeReconciler struct {
 }
 
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx).WithValues("node", req.Name)
+	logger := log.FromContext(ctx).WithValues(LogFieldNode, req.Name)
 	ctx = log.IntoContext(ctx, logger)
 
 	var node corev1.Node
@@ -50,7 +50,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.MatchingFields{"spec.nodeName": node.Name}); err != nil {
+	if err := r.List(ctx, &podList, client.MatchingFields{IndexPodNodeName: node.Name}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list pods on node: %w", err)
 	}
 
@@ -64,7 +64,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 		wl, err := ResolveWorkloadFromPod(ctx, r.Client, pod)
 		if err != nil {
-			logger.Error(err, "failed to resolve workload", "pod", pod.Name)
+			logger.Error(err, "failed to resolve workload", LogFieldPod, pod.Name)
 			continue
 		}
 		if wl == nil {
@@ -98,7 +98,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	for key, wl := range workloads {
 		result, err := r.reconcileWorkload(ctx, wl, node.Name)
 		if err != nil {
-			logger.Error(err, "failed to reconcile workload", "workload", key)
+			logger.Error(err, "failed to reconcile workload", LogFieldWorkload, key)
 			continue
 		}
 		if result.RequeueAfter > 0 && (requeueAfter == 0 || result.RequeueAfter < requeueAfter) {
@@ -113,9 +113,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWorkload, nodeName string) (ctrl.Result, error) {
+	ctx = ctxWithWorkload(ctx, wl)
+	logger := log.FromContext(ctx)
 	meta := wl.GetObjectMeta()
-	logger := log.FromContext(ctx).WithValues("workload", meta.Name, "namespace", meta.Namespace, "kind", wl.GetObjectKind())
-	ctx = log.IntoContext(ctx, logger)
 
 	annotations := meta.Annotations
 	if annotations == nil {
@@ -131,13 +131,13 @@ func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWork
 			elapsed := time.Since(drainStart)
 
 			if elapsed > 3*r.Config.ReadinessTimeout {
-				logger.Info("stale drain state detected, force aborting", "state", currentState)
+				logger.Info("stale drain state detected, force aborting", LogFieldState, currentState)
 				r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainStale", "Force aborting stale drain operation on node %s", nodeName)
 				return r.abortWorkload(ctx, wl)
 			}
 
 			if elapsed > r.Config.ReadinessTimeout {
-				logger.Info("drain operation timed out", "state", currentState)
+				logger.Info("drain operation timed out", LogFieldState, currentState)
 				r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainTimeout", "Drain operation timed out on node %s", nodeName)
 				return r.abortWorkload(ctx, wl)
 			}
@@ -150,7 +150,7 @@ func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWork
 		}
 	} else {
 		if drainNode := annotations[AnnotationDrainNode]; drainNode != "" && drainNode != nodeName {
-			logger.V(1).Info("workload is being drained by another node", "otherNode", drainNode)
+			logger.V(1).Info("workload is being drained by another node", LogFieldOtherNode, drainNode)
 			return ctrl.Result{}, nil
 		}
 	}
@@ -169,7 +169,7 @@ func (r *NodeReconciler) reconcileWorkload(ctx context.Context, wl DrainableWork
 	case DrainStateDone:
 		return r.handleCleanup(ctx, wl)
 	default:
-		logger.Info("unknown drain state, aborting", "state", currentState)
+		logger.Info("unknown drain state, aborting", LogFieldState, currentState)
 		return r.abortWorkload(ctx, wl)
 	}
 }
@@ -206,7 +206,7 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 
 	if hpa != nil {
 		if hpa.Spec.MaxReplicas < originalReplicas+1 {
-			logger.Info("HPA maxReplicas too low for surge, skipping", "maxReplicas", hpa.Spec.MaxReplicas)
+			logger.Info("HPA maxReplicas too low for surge, skipping", LogFieldMaxReplicas, hpa.Spec.MaxReplicas)
 			r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "DrainSkipped", "HPA maxReplicas=%d prevents drain surge", hpa.Spec.MaxReplicas)
 			return ctrl.Result{}, nil
 		}
@@ -221,11 +221,11 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 		if err := PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpa.Name, originalReplicas+1); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch HPA minReplicas for scale-up: %w", err)
 		}
-		logger.Info("patched HPA minReplicas for surge", "hpa", hpa.Name, "from", originalMin, "to", originalReplicas+1)
+		logger.Info("patched HPA minReplicas for surge", LogFieldHPA, hpa.Name, LogFieldFrom, originalMin, LogFieldTo, originalReplicas+1)
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Patched HPA %s minReplicas from %d to %d for node drain on %s", hpa.Name, originalMin, originalReplicas+1, nodeName)
 	} else {
 		wl.SetReplicas(originalReplicas + 1)
-		logger.Info("scaled up workload", "from", originalReplicas, "to", originalReplicas+1)
+		logger.Info("scaled up workload", LogFieldFrom, originalReplicas, LogFieldTo, originalReplicas+1)
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Scaled up from %d to %d for node drain on %s", originalReplicas, originalReplicas+1, nodeName)
 	}
 
@@ -413,27 +413,24 @@ func (r *NodeReconciler) abortWorkloadsForNode(ctx context.Context, nodeName str
 
 func (r *NodeReconciler) findWorkloadsWithDrainNode(ctx context.Context, nodeName string) (map[string]DrainableWorkload, error) {
 	workloads := make(map[string]DrainableWorkload)
+	match := client.MatchingFields{IndexWorkloadDrainNode: nodeName}
 
 	var rolloutList rolloutsv1alpha1.RolloutList
-	if err := r.List(ctx, &rolloutList); err != nil {
+	if err := r.List(ctx, &rolloutList, match); err != nil {
 		return nil, fmt.Errorf("list rollouts: %w", err)
 	}
 	for i := range rolloutList.Items {
 		ro := &rolloutList.Items[i]
-		if ro.Annotations[AnnotationDrainNode] == nodeName {
-			workloads[workloadKey(ro.Namespace, ro.Name)] = &RolloutWorkload{Rollout: ro}
-		}
+		workloads[workloadKey(ro.Namespace, ro.Name)] = &RolloutWorkload{Rollout: ro}
 	}
 
 	var depList appsv1.DeploymentList
-	if err := r.List(ctx, &depList); err != nil {
+	if err := r.List(ctx, &depList, match); err != nil {
 		return nil, fmt.Errorf("list deployments: %w", err)
 	}
 	for i := range depList.Items {
 		dep := &depList.Items[i]
-		if dep.Annotations[AnnotationDrainNode] == nodeName {
-			workloads[workloadKey(dep.Namespace, dep.Name)] = &DeploymentWorkload{Deployment: dep}
-		}
+		workloads[workloadKey(dep.Namespace, dep.Name)] = &DeploymentWorkload{Deployment: dep}
 	}
 
 	return workloads, nil
@@ -448,7 +445,7 @@ func (r *NodeReconciler) shouldProcess(ctx context.Context, wl DrainableWorkload
 	}
 
 	if wl.GetReplicas() != 1 {
-		logger.V(1).Info("workload has more than 1 replica, skipping", "replicas", wl.GetReplicas())
+		logger.V(1).Info("workload has more than 1 replica, skipping", LogFieldReplicas, wl.GetReplicas())
 		return false
 	}
 
@@ -459,7 +456,7 @@ func (r *NodeReconciler) shouldProcess(ctx context.Context, wl DrainableWorkload
 	}
 
 	if drainNode := meta.Annotations[AnnotationDrainNode]; drainNode != "" && drainNode != nodeName {
-		logger.V(1).Info("workload is being drained by another node", "otherNode", drainNode)
+		logger.V(1).Info("workload is being drained by another node", LogFieldOtherNode, drainNode)
 		return false
 	}
 
@@ -496,7 +493,7 @@ func (r *NodeReconciler) restoreHPA(ctx context.Context, meta *metav1.ObjectMeta
 		return fmt.Errorf("invalid %s value %q: %w", AnnotationHPAOriginalMinReplicas, originalMinStr, err)
 	}
 	logger := log.FromContext(ctx)
-	logger.Info("restoring HPA minReplicas", "hpa", hpaName, "minReplicas", originalMin)
+	logger.Info("restoring HPA minReplicas", LogFieldHPA, hpaName, LogFieldMinReplicas, originalMin)
 	return PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpaName, int32(originalMin))
 }
 
@@ -537,9 +534,9 @@ func (r *NodeReconciler) RecoverOrphans(ctx context.Context) error {
 	for i := range rolloutList.Items {
 		ro := &rolloutList.Items[i]
 		if drainNode := ro.Annotations[AnnotationDrainNode]; drainNode != "" && !taintedNodes[drainNode] {
-			logger.Info("found orphaned rollout", "rollout", ro.Name, "namespace", ro.Namespace, "drainNode", drainNode)
+			logger.Info("found orphaned rollout", LogFieldRollout, ro.Name, LogFieldNamespace, ro.Namespace, LogFieldDrainNode, drainNode)
 			if _, err := r.abortWorkload(ctx, &RolloutWorkload{Rollout: ro}); err != nil {
-				logger.Error(err, "failed to abort orphaned rollout", "rollout", ro.Name)
+				logger.Error(err, "failed to abort orphaned rollout", LogFieldRollout, ro.Name)
 			}
 		}
 	}
@@ -551,9 +548,9 @@ func (r *NodeReconciler) RecoverOrphans(ctx context.Context) error {
 	for i := range depList.Items {
 		dep := &depList.Items[i]
 		if drainNode := dep.Annotations[AnnotationDrainNode]; drainNode != "" && !taintedNodes[drainNode] {
-			logger.Info("found orphaned deployment", "deployment", dep.Name, "namespace", dep.Namespace, "drainNode", drainNode)
+			logger.Info("found orphaned deployment", LogFieldDeployment, dep.Name, LogFieldNamespace, dep.Namespace, LogFieldDrainNode, drainNode)
 			if _, err := r.abortWorkload(ctx, &DeploymentWorkload{Deployment: dep}); err != nil {
-				logger.Error(err, "failed to abort orphaned deployment", "deployment", dep.Name)
+				logger.Error(err, "failed to abort orphaned deployment", LogFieldDeployment, dep.Name)
 			}
 		}
 	}
@@ -563,7 +560,7 @@ func (r *NodeReconciler) RecoverOrphans(ctx context.Context) error {
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, "spec.nodeName", func(o client.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, IndexPodNodeName, func(o client.Object) []string {
 		pod := o.(*corev1.Pod)
 		if pod.Spec.NodeName == "" {
 			return nil
@@ -573,6 +570,13 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("create pod node index: %w", err)
 	}
 
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &rolloutsv1alpha1.Rollout{}, IndexWorkloadDrainNode, indexByDrainNodeAnnotation); err != nil {
+		return fmt.Errorf("create rollout drain-node index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &appsv1.Deployment{}, IndexWorkloadDrainNode, indexByDrainNodeAnnotation); err != nil {
+		return fmt.Errorf("create deployment drain-node index: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.mapPodToNode)).
@@ -580,6 +584,17 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(r.mapWorkloadToNode)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 5}).
 		Complete(r)
+}
+
+// indexByDrainNodeAnnotation returns the value of AnnotationDrainNode as the
+// index key, or nil when the annotation is unset. Used by the cache field
+// indexer so List(... MatchingFields{IndexWorkloadDrainNode: node}) is O(matches).
+func indexByDrainNodeAnnotation(o client.Object) []string {
+	v := o.GetAnnotations()[AnnotationDrainNode]
+	if v == "" {
+		return nil
+	}
+	return []string{v}
 }
 
 func (r *NodeReconciler) mapPodToNode(_ context.Context, obj client.Object) []reconcile.Request {
