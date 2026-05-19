@@ -1,7 +1,8 @@
 # k8s-drain-surge
 
-> **Zero-downtime drains for single-replica workloads in Kubernetes.**
-> Surges 1→2 right before the eviction, scales back when it's safe.
+<p align="center">
+  <b>Zero-downtime node drains and restarts for single-replica Deployments and Argo Rollouts in Kubernetes.</b>
+</p>
 
 <p align="center">
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml/badge.svg"></a>
