@@ -1,6 +1,6 @@
 {
   "name": "k8s-drain-surge",
-  "image": "golang:1.22-bookworm",
+  "image": "golang:1.25-bookworm",
   "remoteUser": "root",
   "workspaceFolder": "/workspaces/k8s-drain-surge",
 
