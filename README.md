@@ -246,6 +246,24 @@ helm install k8s-drain-surge deploy/helm/k8s-drain-surge \
   --namespace kube-system
 ```
 
+### Verifying signatures
+
+Release artifacts (controller image and Helm chart) are signed with [cosign](https://docs.sigstore.dev/) using GitHub Actions OIDC keyless signing. To verify before installing:
+
+```bash
+# Image
+cosign verify ghcr.io/aeyrtonvs/k8s-drain-surge:<VERSION> \
+  --certificate-identity-regexp="^https://github.com/aeyrtonvs/k8s-drain-surge/\.github/workflows/release\.yaml@refs/tags/release/.*$" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+
+# Chart
+cosign verify ghcr.io/aeyrtonvs/charts/k8s-drain-surge:<VERSION> \
+  --certificate-identity-regexp="^https://github.com/aeyrtonvs/k8s-drain-surge/\.github/workflows/release\.yaml@refs/tags/release/.*$" \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com
+```
+
+A successful verification prints the certificate's claims (workflow name, ref, commit SHA) — confirming the artifact was built by the official `release.yaml` workflow in this repo and not tampered with after publish.
+
 ### Terraform
 
 ```hcl
