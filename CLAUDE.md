@@ -33,8 +33,10 @@ The devcontainer is the supported local environment for tasks that need to compi
 - `make test` — `go test ./... -v -race` (always run with `-race`; CI does)
 - `make vet` / `make fmt` / `make tidy`
 - Run a single test: `go test ./internal/controller -run TestName -v -race`
-- `make docker-build` — buildx image as `ghcr.io/aeyrtonvs/k8s-drain-surge:latest` (override with `IMG=` / `TAG=`)
+- `make docker-build` — single-arch buildx image loaded into the local daemon (host arch only — `--load` can't emit a manifest list). Override with `IMG=` / `TAG=`.
+- `make docker-push` — multi-arch buildx build (`linux/amd64,linux/arm64` by default; override with `PLATFORMS=`) pushed directly to the registry. Release CI normally handles this — see `.github/workflows/release.yaml`. Requires `docker buildx create --use` once to set up a container-driver builder.
 - `make helm-package` — chart tarball to `bin/`; `helm lint deploy/helm/k8s-drain-surge` is run in CI
+- `make helm-push` — `helm-package` then push to `oci://ghcr.io/aeyrtonvs/charts`
 
 CI (`.github/workflows/ci.yaml`) runs: `go mod tidy`, `go vet`, `go test -race`, build, docker build (no push), `helm lint`. Match these locally before pushing.
 
@@ -61,7 +63,7 @@ none → pending → scaled-up → ready → draining → done → (annotations 
 
 Two safety mechanisms are layered on top of the state machine:
 - **Stale/timeout abort** — at the top of every reconcile, if `AnnotationDrainStart` is older than `ReadinessTimeout` (or 3× for "stale"), the drain is aborted and replicas restored.
-- **Competing-controller re-apply** — `handleScaleUp` and `handleWaitReady` detect external resets of `spec.replicas` (e.g. ArgoCD reconciling to git) and re-apply the surge. Document this to ArgoCD/Flux users as `ignoreDifferences` on `spec.replicas`.
+- **Competing-controller re-apply** — `handleScaleUp` and `handleWaitReady` detect external resets of `spec.replicas` (e.g. ArgoCD reconciling to git) and re-apply the surge. The ArgoCD `ignoreDifferences` snippet that users should add is already documented in `README.md` §"ArgoCD / FluxCD users" — point operators there rather than re-deriving it.
 
 ### Restart-surge state machine
 
@@ -133,7 +135,7 @@ On leader election (in `main.go`), `RecoverOrphans` lists every Rollout and Depl
 
 - `cmd/controller/` — `main.go` only
 - `internal/config/` — flag parsing + validation
-- `internal/controller/` — all reconciler logic; tests live alongside (`*_test.go`)
+- `internal/controller/` — all reconciler logic; tests live alongside (`*_test.go`). `logfields.go` centralizes structured-log key constants (`LogFieldWorkload`, `LogFieldDrainNode`, …) and the cache field-index keys (`IndexPodNodeName`, `IndexWorkloadDrainNode`) — reuse these constants instead of hardcoding strings so log vocabulary stays stable for downstream consumers (Loki, Datadog).
 - `deploy/helm/k8s-drain-surge/` — chart; values map 1:1 onto controller flags
 - `hack/test-*.yaml` — sample workloads (Deployment, Rollout canary, Rollout blue-green) for manual cluster testing
 - `docs/specs/plan-k8s-drain-surge.md` — design notes
@@ -143,4 +145,8 @@ On leader election (in `main.go`), `RecoverOrphans` lists every Rollout and Depl
 - Annotation keys are prefixed `k8s-drain-surge.io/` and centralized in `state.go`. Add new ones to both the const block and `drainAnnotationKeys` so bulk cleanup picks them up.
 - Every state transition that changes replicas or annotations goes through `wl.Patch(...)`, which uses a `MergePatchType`. Do not use the cached object to `Update` — the merge-patch path is what makes annotation deletion atomic.
 - Emit a Kubernetes `Event` (via `r.Recorder`) at every user-visible decision: skip reasons (`DrainSkipped`, `NoPDB`), scale up/down (`DrainSurge`, `DrainScaleDown`), completion (`DrainComplete`), and aborts (`DrainAborted`, `DrainTimeout`, `DrainStale`, `CompetingController`). Operators rely on these for debugging.
-- Log lines use structured `logger.WithValues(...)`. Keep them at `Info` for state transitions and `V(1)` for "still waiting" polling messages so the default log volume stays sane.
+- Log lines use structured `logger.WithValues(...)` with the keys defined in `logfields.go`. Keep them at `Info` for state transitions and `V(1)` for "still waiting" polling messages so the default log volume stays sane.
+
+## Troubleshooting / operator-facing docs
+
+User-facing symptom → cause → fix tables live in `README.md` §Troubleshooting (skip reasons, HPA `maxReplicas=1`, stuck replicas, Windows pod timeouts, the "extra pod during scale-down" expected-behavior note, manual cleanup commands). When a user reports a symptom, check that section first and update it there rather than duplicating troubleshooting prose here — CLAUDE.md is for architecture, README.md is the single source of truth for operator-facing remediation.

@@ -1,11 +1,59 @@
 # k8s-drain-surge
 
-Zero-downtime controller for single-replica workloads in Kubernetes. Two protections:
+> **Zero-downtime drains for single-replica workloads in Kubernetes.**
+> Surges 1→2 right before the eviction, scales back when it's safe.
 
-- **Drain-surge** (always on) — when a node is tainted for drain (by Karpenter, Cluster Autoscaler, or manual `kubectl drain`), temporarily scales opted-in workloads 1→2 replicas, waits for the new pod to be Ready on a different node, lets the eviction proceed, then scales back.
-- **Restart-surge** (opt-in via `--restart-surge-enabled`) — when an Argo Rollout's `kubectl argo rollouts restart` (or the dashboard "Restart" button) is stuck because Argo's PodRestarter uses the eviction API and a `minAvailable: 1` PDB rejects it indefinitely, surges 1→2 so the eviction can proceed, then scales back once Argo finishes. Argo Rollouts only — Deployments don't need this because `kubectl rollout restart deployment/...` uses delete (not eviction) and bypasses PDBs.
+<p align="center">
+  <a href="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="https://github.com/aeyrtonvs/k8s-drain-surge/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/aeyrtonvs/k8s-drain-surge?sort=semver"></a>
+  <a href="https://github.com/aeyrtonvs/k8s-drain-surge/pkgs/container/k8s-drain-surge"><img alt="Image" src="https://ghcr-badge.egpl.dev/aeyrtonvs/k8s-drain-surge/latest_tag?trim=major&label=image"></a>
+  <img alt="Go" src="https://img.shields.io/badge/go-1.22-00ADD8?logo=go">
+  <img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-%E2%89%A51.28-326CE5?logo=kubernetes&logoColor=white">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+</p>
+
+A Kubernetes controller that protects single-replica `Deployment`s and Argo `Rollout`s from downtime during disruptive events — node drains by Karpenter / Cluster Autoscaler / `kubectl drain`, and PDB-blocked Argo Rollout restarts. Two opt-in protections:
+
+- **Drain-surge** (always on) — when a node is tainted for drain, temporarily scales opted-in workloads 1→2 replicas, waits for the new pod to be Ready on a different node, lets the eviction proceed, then scales back.
+- **Restart-surge** (opt-in) — when an Argo Rollout's `restart` is stuck because Argo's PodRestarter uses the eviction API and a `minAvailable: 1` PDB rejects it indefinitely, surges 1→2 so the eviction can proceed, then scales back once Argo finishes. Argo Rollouts only — Deployments don't need this because `kubectl rollout restart deployment/...` uses delete (not eviction) and bypasses PDBs.
 
 Supports **Argo Rollouts** (Canary and Blue-Green) and **Deployments**.
+
+## Quick Start
+
+```bash
+helm install k8s-drain-surge oci://ghcr.io/aeyrtonvs/charts/k8s-drain-surge \
+  --namespace kube-system
+```
+
+Then opt in any single-replica workload and pair it with a PDB:
+
+```yaml
+metadata:
+  annotations:
+    k8s-drain-surge.io/enabled: "true"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: my-app } }
+```
+
+See [What you need to do](#what-you-need-to-do) for the full opt-in checklist (ArgoCD, HPA, Karpenter `terminationGracePeriod`).
+
+## Features
+
+- **Opt-in by annotation** — never touches a workload without `k8s-drain-surge.io/enabled: "true"`
+- **Drain-surge** — pre-empts evictions from Karpenter, Cluster Autoscaler, and manual `kubectl drain`
+- **Restart-surge** — unblocks PDB-stuck `kubectl argo rollouts restart` on single-replica Rollouts
+- **HPA-aware** — patches `minReplicas` instead of `spec.replicas` when an HPA is attached; restores on completion
+- **ArgoCD / FluxCD friendly** — detects external resets of `spec.replicas` mid-surge and re-applies (with `ignoreDifferences` documented)
+- **Crash-safe** — every operation is annotation-driven and idempotent; a restarted controller resumes from on-disk state
+- **Orphan recovery** — on leader election, aborts and restores any workload whose drain node is no longer tainted
+- **Stale/timeout aborts** — bounded operation time; replicas always restored on overrun
+- **Argo Rollouts + Deployments** — Canary, Blue-Green, and RollingUpdate strategies
+- **Observable** — structured logs (Loki/Datadog-friendly key vocabulary) and Kubernetes Events at every user-visible decision
 
 ## Dependencies
 
@@ -21,15 +69,78 @@ Supports **Argo Rollouts** (Canary and Blue-Green) and **Deployments**.
 
 The controller watches for nodes with drain taints and runs a state machine per workload:
 
+<table>
+<tr>
+<th width="33%" align="left">
+
+<sub>SCENARIO&nbsp;1</sub><br/>
+**No PDB**<br/>
+<sub>Outcome — Downtime</sub>
+
+</th>
+<th width="33%" align="left">
+
+<sub>SCENARIO&nbsp;2</sub><br/>
+**PDB, no controller**<br/>
+<sub>Outcome — Stuck / Downtime</sub>
+
+</th>
+<th width="33%" align="left">
+
+<sub>SCENARIO&nbsp;3</sub><br/>
+**PDB + k8s-drain-surge**<br/>
+<sub>Outcome — Zero downtime</sub>
+
+</th>
+</tr>
+<tr><td valign="top">
+
+```mermaid
+flowchart TB
+    A([Node tainted]):::tainted
+    B[Eviction proceeds<br/>immediately]:::muted
+    C[Pod killed<br/>before replacement]:::muted
+    D[Downtime]:::downtime
+    A --> B --> C --> D
+    classDef tainted fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef muted fill:#fafaf9,stroke:#d6d3d1,color:#44403c
+    classDef downtime fill:#fee2e2,stroke:#dc2626,color:#991b1b
+    linkStyle default stroke:#a8a29e,stroke-width:1.5px
 ```
-1. Node gets tainted (e.g. karpenter.sh/disrupted)
-2. Controller finds single-replica workloads on that node
-3. Scales the workload 1 -> 2 (surge)
-4. Waits for the new pod to be Ready on another node
-5. PDB is now satisfied, Karpenter evicts the old pod
-6. Controller scales back 2 -> 1
-7. Cleans up annotations
+
+</td><td valign="top">
+
+```mermaid
+flowchart TB
+    A([Node tainted]):::tainted
+    B[PDB rejects<br/>eviction]:::muted
+    C[Karpenter retries<br/>or force-kills at TTL]:::muted
+    D[Stuck<br/>or Downtime]:::downtime
+    A --> B --> C --> D
+    classDef tainted fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef muted fill:#fafaf9,stroke:#d6d3d1,color:#44403c
+    classDef downtime fill:#fee2e2,stroke:#dc2626,color:#991b1b
+    linkStyle default stroke:#a8a29e,stroke-width:1.5px
 ```
+
+</td><td valign="top">
+
+```mermaid
+flowchart TB
+    A([Node tainted]):::tainted
+    B[Surge 1 → 2]:::ok
+    C[New pod Ready<br/>on another node]:::muted
+    D[Eviction proceeds<br/>PDB satisfied]:::muted
+    E[Scale back<br/>2 → 1]:::ok
+    A --> B --> C --> D --> E
+    classDef tainted fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef muted fill:#fafaf9,stroke:#d6d3d1,color:#44403c
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    linkStyle default stroke:#a8a29e,stroke-width:1.5px
+```
+
+</td></tr>
+</table>
 
 The controller is **opt-in only**. It will not touch any workload unless you explicitly annotate it.
 
@@ -117,39 +228,6 @@ spec:
 
 If your NodePool has `terminationGracePeriod` configured, it must be **greater** than the controller's `--readiness-timeout` (default 10m). Without `terminationGracePeriod`, Karpenter waits indefinitely (which is the ideal behavior).
 
-## Development
-
-### Devcontainer (recommended)
-
-The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.22, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
-
-Requirements: VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (or any editor that supports the devcontainer spec), and Docker.
-
-Setup:
-
-1. Open the project in VS Code.
-2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**.
-3. First open builds the image (`golang:1.22-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
-
-What's persisted across rebuilds:
-
-- `/go/pkg/mod` (module cache) and `/root/.cache/go-build` (build cache) are mounted on named Docker volumes (`k8s-drain-surge-gomodcache`, `k8s-drain-surge-gobuildcache`), so `go test` and `go build` stay warm.
-- If a cache ever gets corrupted: `docker volume rm k8s-drain-surge-gomodcache k8s-drain-surge-gobuildcache` and rebuild.
-
-Inside the container, all `make` targets work directly. CI parity is the contract — anything green in the devcontainer is green in CI. If bootstrap fails (e.g. a broken test on `master`), you still get a shell — fix it and re-run `bash .devcontainer/bootstrap.sh`.
-
-### Make targets
-
-| Command | Description |
-|---|---|
-| `make build` | Compile the controller binary to `bin/controller` |
-| `make test` | Run all tests with race detector |
-| `make vet` | Run `go vet` |
-| `make fmt` | Run `go fmt` |
-| `make tidy` | Run `go mod tidy` |
-| `make docker-build` | Build the Docker image locally |
-| `make helm-package` | Package the Helm chart to `bin/` |
-
 ## Installation
 
 ### Helm CLI
@@ -188,6 +266,39 @@ resource "helm_release" "k8s_drain_surge" {
   }
 }
 ```
+
+## Development
+
+### Devcontainer (recommended)
+
+The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.22, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
+
+Requirements: VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (or any editor that supports the devcontainer spec), and Docker.
+
+Setup:
+
+1. Open the project in VS Code.
+2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**.
+3. First open builds the image (`golang:1.22-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
+
+What's persisted across rebuilds:
+
+- `/go/pkg/mod` (module cache) and `/root/.cache/go-build` (build cache) are mounted on named Docker volumes (`k8s-drain-surge-gomodcache`, `k8s-drain-surge-gobuildcache`), so `go test` and `go build` stay warm.
+- If a cache ever gets corrupted: `docker volume rm k8s-drain-surge-gomodcache k8s-drain-surge-gobuildcache` and rebuild.
+
+Inside the container, all `make` targets work directly. CI parity is the contract — anything green in the devcontainer is green in CI. If bootstrap fails (e.g. a broken test on `master`), you still get a shell — fix it and re-run `bash .devcontainer/bootstrap.sh`.
+
+### Make targets
+
+| Command | Description |
+|---|---|
+| `make build` | Compile the controller binary to `bin/controller` |
+| `make test` | Run all tests with race detector |
+| `make vet` | Run `go vet` |
+| `make fmt` | Run `go fmt` |
+| `make tidy` | Run `go mod tidy` |
+| `make docker-build` | Build the Docker image locally |
+| `make helm-package` | Package the Helm chart to `bin/` |
 
 ## Configuration
 
@@ -323,6 +434,13 @@ kubectl annotate deployment my-app \
   k8s-drain-surge.io/drain-start-
 kubectl scale deployment my-app --replicas=1
 ```
+
+## Support
+
+Found a bug, hit a rough edge, or have a question? Two ways to get in touch:
+
+- **GitHub Issues** — [open an issue](https://github.com/aeyrtonvs/k8s-drain-surge/issues/new) (preferred, so the discussion stays public and searchable).
+- **Email** — [aeyrtonvs@gmail.com](mailto:aeyrtonvs@gmail.com) for private reports (e.g. suspected security issues).
 
 ## License
 
