@@ -10,6 +10,7 @@
   <img alt="Go" src="https://img.shields.io/badge/go-1.22-00ADD8?logo=go">
   <img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-%E2%89%A51.28-326CE5?logo=kubernetes&logoColor=white">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <a href="https://artifacthub.io/packages/search?repo=k8s-drain-surge"><img alt="Artifact Hub" src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/k8s-drain-surge"></a>
 </p>
 
 A Kubernetes controller that protects single-replica `Deployment`s and Argo `Rollout`s from downtime during disruptive events — node drains by Karpenter / Cluster Autoscaler / `kubectl drain`, and PDB-blocked Argo Rollout restarts. Two opt-in protections:
