@@ -95,13 +95,12 @@ jobs:
       - name: Sign container image with cosign (keyless)
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           # Sign by digest, not by tag — tags are mutable, digests are not,
           # so this binds the signature to the exact bits we just pushed.
-          for tag in $TAGS; do
-            cosign sign --yes "${tag%%:*}@${DIGEST}"
-          done
+          # Only one sign call is needed even though we publish multiple tags;
+          # cosign verify <tag> resolves the tag to the digest and finds it.
+          cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
       - name: Install Helm
         uses: azure/setup-helm@v4
@@ -118,6 +117,9 @@ jobs:
       - name: Push Helm chart
         id: push_chart
         run: |
+          # helm push has no flag to emit the digest separately (as of v3.14),
+          # so we capture stdout and grep the "Digest:" line. Cosign needs the
+          # digest because signing by tag would not survive a tag rewrite.
           OUTPUT=$(helm push k8s-drain-surge-*.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts 2>&1)
           echo "$OUTPUT"
           DIGEST=$(echo "$OUTPUT" | awk '/^Digest:/ {print $2}')

@@ -5,6 +5,26 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["image", "controller"],
+  "$defs": {
+    "goDuration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+      "description": "Go duration string parsed by time.ParseDuration."
+    },
+    "k8sQuantity": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?(m|k|Ki|M|Mi|G|Gi|T|Ti|P|Pi|E|Ei)?$",
+      "description": "Kubernetes resource quantity (e.g. 100m, 64Mi, 2Gi)."
+    },
+    "resourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "$ref": "#/$defs/k8sQuantity" },
+        "memory": { "$ref": "#/$defs/k8sQuantity" }
+      }
+    }
+  },
   "properties": {
     "replicaCount": {
       "type": "integer",
@@ -58,16 +78,14 @@
           }
         },
         "readinessTimeout": {
-          "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "allOf": [{ "$ref": "#/$defs/goDuration" }],
           "default": "10m",
-          "description": "Go duration. Time the controller waits for a surged pod to become Ready before aborting and restoring original replicas. Must be > requeueInterval. Windows pods may need 15m+."
+          "description": "Time the controller waits for a surged pod to become Ready before aborting and restoring original replicas. Must be > requeueInterval. Windows pods may need 15m+."
         },
         "requeueInterval": {
-          "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "allOf": [{ "$ref": "#/$defs/goDuration" }],
           "default": "5s",
-          "description": "Go duration. Poll interval between state-machine reconciles. Smaller = faster reaction, more API server load."
+          "description": "Poll interval between state-machine reconciles. Smaller = faster reaction, more API server load."
         },
         "leaderElect": {
           "type": "boolean",
@@ -99,16 +117,14 @@
               "description": "Opt in to restart-surge. Off by default; only useful with Argo Rollouts."
             },
             "gracePeriod": {
-              "type": "string",
-              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+              "allOf": [{ "$ref": "#/$defs/goDuration" }],
               "default": "60s",
-              "description": "Go duration. Wait this long after spec.restartAt before triggering a surge — lets Argo finish on its own when the PDB permits."
+              "description": "Wait this long after spec.restartAt before triggering a surge — lets Argo finish on its own when the PDB permits."
             },
             "timeout": {
-              "type": "string",
-              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+              "allOf": [{ "$ref": "#/$defs/goDuration" }],
               "default": "10m",
-              "description": "Go duration. Total budget for one restart-surge operation. Abort and restore on overrun."
+              "description": "Total budget for one restart-surge operation. Abort and restore on overrun."
             }
           }
         }
@@ -132,10 +148,11 @@
     },
     "resources": {
       "type": "object",
+      "additionalProperties": false,
       "description": "Resource requests/limits for the controller container.",
       "properties": {
-        "requests": { "type": "object" },
-        "limits": { "type": "object" }
+        "requests": { "$ref": "#/$defs/resourceList" },
+        "limits": { "$ref": "#/$defs/resourceList" }
       }
     },
     "serviceAccount": {
