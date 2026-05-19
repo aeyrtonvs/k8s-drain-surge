@@ -17,6 +17,9 @@ on:
   schedule:
     # Daily catch for CVEs that landed in stale dependencies overnight,
     # so a green master that we haven't touched doesn't silently rot.
+    # Offset minute (06:17 UTC, not the top of an hour) to dodge the
+    # cron stampede that hits GitHub Actions at :00 and lengthens queue
+    # times for everyone scheduling at round minutes.
     - cron: '17 6 * * *'
 
 # Auto-cancel earlier runs of the same ref so a fresh push supersedes
