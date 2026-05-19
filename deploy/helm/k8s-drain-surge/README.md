@@ -34,7 +34,7 @@ spec:
 - One of the following node lifecycle managers (or manual drain):
   - [Karpenter](https://karpenter.sh/) >= 0.32
   - [Cluster Autoscaler](https://github.com/kubernetes/autoscaler)
-  - Manual `kubectl drain` / `kubectl taint`
+  - Manual `kubectl drain` / `kubectl cordon` / `kubectl taint`
 - [Argo Rollouts](https://argoproj.github.io/argo-rollouts/) >= 1.5 (only if you enable restart-surge)
 
 ## Installation
