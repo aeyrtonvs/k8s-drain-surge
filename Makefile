@@ -1,5 +1,6 @@
 IMG ?= ghcr.io/aeyrtonvs/k8s-drain-surge
 TAG ?= latest
+PLATFORMS ?= linux/amd64,linux/arm64
 
 .PHONY: build test vet fmt docker-build docker-push helm-package clean
 
@@ -15,11 +16,13 @@ vet:
 fmt:
 	go fmt ./...
 
+# Single-arch local build (loads into the local docker daemon).
 docker-build:
-	docker buildx build -t $(IMG):$(TAG) .
+	docker buildx build --platform linux/$(shell go env GOARCH) -t $(IMG):$(TAG) --load .
 
-docker-push: docker-build
-	docker push $(IMG):$(TAG)
+# Multi-arch build + push as a manifest list. Requires `docker buildx create --use` once.
+docker-push:
+	docker buildx build --platform $(PLATFORMS) -t $(IMG):$(TAG) --push .
 
 helm-package:
 	helm package deploy/helm/k8s-drain-surge -d bin/
