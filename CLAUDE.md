@@ -33,8 +33,8 @@ The devcontainer is the supported local environment for tasks that need to compi
 - `make test` — `go test ./... -v -race` (always run with `-race`; CI does)
 - `make vet` / `make fmt` / `make tidy`
 - Run a single test: `go test ./internal/controller -run TestName -v -race`
-- `make docker-build` — buildx image as `ghcr.io/aeyrtonvs/k8s-drain-surge:latest` (override with `IMG=` / `TAG=`)
-- `make docker-push` — `docker-build` then push to the registry (uses your local docker creds; release CI normally handles this — see `.github/workflows/release.yaml`)
+- `make docker-build` — single-arch buildx image loaded into the local daemon (host arch only — `--load` can't emit a manifest list). Override with `IMG=` / `TAG=`.
+- `make docker-push` — multi-arch buildx build (`linux/amd64,linux/arm64` by default; override with `PLATFORMS=`) pushed directly to the registry. Release CI normally handles this — see `.github/workflows/release.yaml`. Requires `docker buildx create --use` once to set up a container-driver builder.
 - `make helm-package` — chart tarball to `bin/`; `helm lint deploy/helm/k8s-drain-surge` is run in CI
 - `make helm-push` — `helm-package` then push to `oci://ghcr.io/aeyrtonvs/charts`
 

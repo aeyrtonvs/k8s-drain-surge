@@ -79,6 +79,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # provenance attestations create an extra unknown/unknown manifest
+          # entry that some OCI clients (including older Helm/containerd
+          # paths) mis-handle on multi-arch lists. Disable until needed.
           provenance: false
 
       - name: Install Helm

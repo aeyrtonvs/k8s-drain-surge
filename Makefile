@@ -2,7 +2,7 @@ IMG ?= ghcr.io/aeyrtonvs/k8s-drain-surge
 TAG ?= latest
 PLATFORMS ?= linux/amd64,linux/arm64
 
-.PHONY: build test vet fmt docker-build docker-push helm-package clean
+.PHONY: build test vet fmt tidy docker-build docker-push helm-package helm-push clean
 
 build:
 	go build -o bin/controller ./cmd/controller
@@ -16,11 +16,12 @@ vet:
 fmt:
 	go fmt ./...
 
-# Single-arch local build (loads into the local docker daemon).
+# --load can only emit a single-arch image into the local daemon, so this
+# build defaults to the host arch. Use docker-push for multi-arch releases.
 docker-build:
-	docker buildx build --platform linux/$(shell go env GOARCH) -t $(IMG):$(TAG) --load .
+	docker buildx build -t $(IMG):$(TAG) --load .
 
-# Multi-arch build + push as a manifest list. Requires `docker buildx create --use` once.
+# Requires `docker buildx create --use` once to create a container-driver builder.
 docker-push:
 	docker buildx build --platform $(PLATFORMS) -t $(IMG):$(TAG) --push .
 
