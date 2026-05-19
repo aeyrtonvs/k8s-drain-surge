@@ -9,13 +9,13 @@ A Kubernetes controller (Go, controller-runtime) that prevents downtime for sing
 1. **Drain-surge** (always on) — when a node gets a drain taint, scale opted-in `Deployment`s and Argo `Rollout`s from 1→2 replicas, wait for the surge pod Ready on a different node, let the eviction happen, scale back.
 2. **Restart-surge** (opt-in via `--restart-surge-enabled`) — when an Argo Rollout's `spec.restartAt` is blocked by a PDB (Argo's `PodRestarter` uses the eviction API and a single-replica PDB rejects it indefinitely), surge 1→2 so the PDB permits the eviction, then scale back once Argo finishes.
 
-Module: `github.com/aeyrtonvs/k8s-drain-surge`. Go 1.22. Builds against `k8s.io/*` v0.30 and `controller-runtime` v0.18.
+Module: `github.com/aeyrtonvs/k8s-drain-surge`. Go 1.25. Builds against `k8s.io/*` v0.30 and `controller-runtime` v0.18.
 
 ## Dev environment
 
-The repo ships with a VS Code devcontainer (`.devcontainer/`) so the toolchain (Go 1.22, make) is reproducible and CI-equivalent locally.
+The repo ships with a VS Code devcontainer (`.devcontainer/`) so the toolchain (Go 1.25, make) is reproducible and CI-equivalent locally.
 
-- **Image**: `golang:1.22-bookworm`. Go is preinstalled at `/usr/local/go/bin` and on `PATH` by default.
+- **Image**: `golang:1.25-bookworm`. Go is preinstalled at `/usr/local/go/bin` and on `PATH` by default.
 - **Persisted caches**: two named Docker volumes — `k8s-drain-surge-gomodcache` (`/go/pkg/mod`) and `k8s-drain-surge-gobuildcache` (`/root/.cache/go-build`) — so module/build state survives container rebuilds. Speeds up cold opens dramatically; safe to `docker volume rm` if ever corrupted.
 - **`onCreateCommand`**: installs `make` via apt (the base image doesn't ship it).
 - **`postCreateCommand`**: runs `.devcontainer/bootstrap.sh` once, which executes `go mod download` followed by the same `make` targets CI runs (`tidy`, `vet`, `test`, `build`). This verifies the workspace end-to-end before you start editing.

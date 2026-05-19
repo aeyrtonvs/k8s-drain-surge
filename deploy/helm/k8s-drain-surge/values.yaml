@@ -39,10 +39,12 @@ priorityClassName: system-cluster-critical
 
 resources:
   requests:
-    cpu: 50m
+    cpu: 10m
     memory: 64Mi
+  # No CPU limit: throttling a reactive controller hurts reconcile
+  # latency during the moments it matters most (e.g. mid-drain). See
+  # https://home.robusta.dev/blog/stop-using-cpu-limits for context.
   limits:
-    cpu: 200m
     memory: 128Mi
 
 serviceAccount:

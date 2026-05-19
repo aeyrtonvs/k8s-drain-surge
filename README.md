@@ -6,9 +6,10 @@
 
 <p align="center">
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/security.yaml/badge.svg"></a>
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/aeyrtonvs/k8s-drain-surge?sort=semver"></a>
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/pkgs/container/k8s-drain-surge"><img alt="Image" src="https://ghcr-badge.egpl.dev/aeyrtonvs/k8s-drain-surge/latest_tag?trim=major&label=image"></a>
-  <img alt="Go" src="https://img.shields.io/badge/go-1.22-00ADD8?logo=go">
+  <img alt="Go" src="https://img.shields.io/badge/go-1.25-00ADD8?logo=go">
   <img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-%E2%89%A51.28-326CE5?logo=kubernetes&logoColor=white">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <a href="https://artifacthub.io/packages/search?repo=k8s-drain-surge"><img alt="Artifact Hub" src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/k8s-drain-surge"></a>
@@ -291,7 +292,7 @@ resource "helm_release" "k8s_drain_surge" {
 
 ### Devcontainer (recommended)
 
-The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.22, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
+The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.25, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
 
 Requirements: VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (or any editor that supports the devcontainer spec), and Docker.
 
@@ -299,7 +300,7 @@ Setup:
 
 1. Open the project in VS Code.
 2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**.
-3. First open builds the image (`golang:1.22-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
+3. First open builds the image (`golang:1.25-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
 
 What's persisted across rebuilds:
 

@@ -1,0 +1,45 @@
+version: 2
+updates:
+  # Go modules — daily security patches, weekly minor/patch bumps.
+  # Security updates are emitted on a separate schedule and can't be
+  # disabled, so the weekly cadence is the floor for non-security bumps.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Mexico_City
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    groups:
+      # k8s.io/* and controller-runtime move in lockstep with each
+      # other and with the k8s minor it targets. Updating one without
+      # the others almost always produces unbuildable code, so bundle
+      # them into a single PR for review.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/controller-runtime"
+
+  # Dockerfile base image (golang:1.25 -> 1.26 when stable, distroless tags).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - docker
+
+  # Pinned action versions across all workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci
