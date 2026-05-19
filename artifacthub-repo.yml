@@ -1,0 +1,10 @@
+# Artifact Hub repository metadata.
+# https://artifacthub.io/docs/topics/repositories/
+#
+# The repositoryID below maps this OCI registry to the Artifact Hub
+# repository registered by the chart owner; together with the owners
+# list it establishes verified-publisher status.
+repositoryID: f6d1fc7f-37ef-4066-af24-ef0dc7bc9fa6
+owners:
+  - name: Aeyrton Villalobos
+    email: aeyrtonvs@gmail.com

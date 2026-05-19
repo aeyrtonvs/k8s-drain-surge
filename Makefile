@@ -1,7 +1,8 @@
 IMG ?= ghcr.io/aeyrtonvs/k8s-drain-surge
 TAG ?= latest
+PLATFORMS ?= linux/amd64,linux/arm64
 
-.PHONY: build test vet fmt docker-build docker-push helm-package clean
+.PHONY: build test vet fmt tidy docker-build docker-push helm-package helm-push clean
 
 build:
 	go build -o bin/controller ./cmd/controller
@@ -15,11 +16,14 @@ vet:
 fmt:
 	go fmt ./...
 
+# --load can only emit a single-arch image into the local daemon, so this
+# build defaults to the host arch. Use docker-push for multi-arch releases.
 docker-build:
-	docker buildx build -t $(IMG):$(TAG) .
+	docker buildx build -t $(IMG):$(TAG) --load .
 
-docker-push: docker-build
-	docker push $(IMG):$(TAG)
+# Requires `docker buildx create --use` once to create a container-driver builder.
+docker-push:
+	docker buildx build --platform $(PLATFORMS) -t $(IMG):$(TAG) --push .
 
 helm-package:
 	helm package deploy/helm/k8s-drain-surge -d bin/

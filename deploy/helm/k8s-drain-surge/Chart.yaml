@@ -1,6 +1,6 @@
 apiVersion: v2
 name: k8s-drain-surge
-description: Kubernetes controller for zero-downtime node drain with temporary replica surge
+description: Zero-downtime node drains and restarts for single-replica Deployments and Argo Rollouts in Kubernetes
 type: application
 version: 0.0.0-dev
 appVersion: "0.0.0-dev"

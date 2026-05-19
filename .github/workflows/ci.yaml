@@ -3,6 +3,17 @@ name: CI
 on:
   pull_request:
     branches: [master, develop]
+    # Skip CI on PRs that only touch files which can't affect build, tests,
+    # image, or chart. If a PR mixes docs + code, CI still runs (GitHub
+    # evaluates ignored paths only when ALL changed files match).
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.devcontainer/**'
+      - '.github/workflows/release.yaml'
+      - 'artifacthub-repo.yml'
+      - 'hack/test-*.yaml'
 
 permissions:
   contents: read
