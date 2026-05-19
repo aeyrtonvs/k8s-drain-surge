@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "title": "k8s-drain-surge",
+  "description": "Helm values for the k8s-drain-surge controller.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "controller"],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 2,
+      "description": "Number of controller pods. Leader election picks one active leader; >=2 is recommended for HA so a node failure does not pause reconciliation."
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "default": "ghcr.io/aeyrtonvs/k8s-drain-surge",
+          "description": "Container image repository for the controller."
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"],
+          "default": "IfNotPresent",
+          "description": "Kubernetes imagePullPolicy."
+        },
+        "tag": {
+          "type": "string",
+          "default": "",
+          "description": "Image tag. Empty string falls back to Chart.AppVersion."
+        }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readinessTimeout", "requeueInterval"],
+      "properties": {
+        "drainTaints": {
+          "type": "array",
+          "description": "Node taint keys/effects that trigger a drain-surge. Defaults cover Karpenter, Cluster Autoscaler, and kubectl drain.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "effect"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "effect": {
+                "type": "string",
+                "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"]
+              }
+            }
+          }
+        },
+        "readinessTimeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "default": "10m",
+          "description": "Go duration. Time the controller waits for a surged pod to become Ready before aborting and restoring original replicas. Must be > requeueInterval. Windows pods may need 15m+."
+        },
+        "requeueInterval": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "default": "5s",
+          "description": "Go duration. Poll interval between state-machine reconciles. Smaller = faster reaction, more API server load."
+        },
+        "leaderElect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable leader election. Required when replicaCount > 1."
+        },
+        "metricsPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8080,
+          "description": "Prometheus metrics bind port."
+        },
+        "healthPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8081,
+          "description": "Liveness/readiness probe bind port."
+        },
+        "restartSurge": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Restart-surge protects single-replica Argo Rollouts whose `kubectl argo rollouts restart` is blocked indefinitely by a PDB (Argo's PodRestarter uses the eviction API). Argo Rollouts only.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Opt in to restart-surge. Off by default; only useful with Argo Rollouts."
+            },
+            "gracePeriod": {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+              "default": "60s",
+              "description": "Go duration. Wait this long after spec.restartAt before triggering a surge — lets Argo finish on its own when the PDB permits."
+            },
+            "timeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+              "default": "10m",
+              "description": "Go duration. Total budget for one restart-surge operation. Abort and restore on overrun."
+            }
+          }
+        }
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "default": { "kubernetes.io/os": "linux" },
+      "description": "nodeSelector for controller pods."
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Tolerations applied to controller pods.",
+      "items": { "type": "object" }
+    },
+    "priorityClassName": {
+      "type": "string",
+      "default": "system-cluster-critical",
+      "description": "Pod priorityClassName. system-cluster-critical keeps the controller alive during node pressure."
+    },
+    "resources": {
+      "type": "object",
+      "description": "Resource requests/limits for the controller container.",
+      "properties": {
+        "requests": { "type": "object" },
+        "limits": { "type": "object" }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "default": true,
+          "description": "Create a dedicated ServiceAccount. Set false to reuse an existing one (see .name)."
+        },
+        "name": {
+          "type": "string",
+          "default": "",
+          "description": "ServiceAccount name. Required when create=false."
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": {},
+          "description": "Annotations on the ServiceAccount (e.g. IRSA / Workload Identity bindings)."
+        }
+      }
+    }
+  }
+}
