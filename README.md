@@ -6,15 +6,16 @@
 
 <p align="center">
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/aeyrtonvs/k8s-drain-surge/actions/workflows/security.yaml/badge.svg"></a>
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/aeyrtonvs/k8s-drain-surge?sort=semver"></a>
   <a href="https://github.com/aeyrtonvs/k8s-drain-surge/pkgs/container/k8s-drain-surge"><img alt="Image" src="https://ghcr-badge.egpl.dev/aeyrtonvs/k8s-drain-surge/latest_tag?trim=major&label=image"></a>
-  <img alt="Go" src="https://img.shields.io/badge/go-1.22-00ADD8?logo=go">
+  <img alt="Go" src="https://img.shields.io/badge/go-1.25-00ADD8?logo=go">
   <img alt="Kubernetes" src="https://img.shields.io/badge/kubernetes-%E2%89%A51.28-326CE5?logo=kubernetes&logoColor=white">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <a href="https://artifacthub.io/packages/search?repo=k8s-drain-surge"><img alt="Artifact Hub" src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/k8s-drain-surge"></a>
 </p>
 
-A Kubernetes controller that protects single-replica `Deployment`s and Argo `Rollout`s from downtime during disruptive events — node drains by Karpenter / Cluster Autoscaler / `kubectl drain`, and PDB-blocked Argo Rollout restarts. Two opt-in protections:
+A Kubernetes controller that protects single-replica `Deployment`s and Argo `Rollout`s from downtime during disruptive events — node drains by Karpenter / Cluster Autoscaler / `kubectl drain` / `kubectl cordon`, and PDB-blocked Argo Rollout restarts. Two opt-in protections:
 
 - **Drain-surge** (always on) — when a node is tainted for drain, temporarily scales opted-in workloads 1→2 replicas, waits for the new pod to be Ready on a different node, lets the eviction proceed, then scales back.
 - **Restart-surge** (opt-in) — when an Argo Rollout's `restart` is stuck because Argo's PodRestarter uses the eviction API and a `minAvailable: 1` PDB rejects it indefinitely, surges 1→2 so the eviction can proceed, then scales back once Argo finishes. Argo Rollouts only — Deployments don't need this because `kubectl rollout restart deployment/...` uses delete (not eviction) and bypasses PDBs.
@@ -47,7 +48,7 @@ See [What you need to do](#what-you-need-to-do) for the full opt-in checklist (A
 ## Features
 
 - **Opt-in by annotation** — never touches a workload without `k8s-drain-surge.io/enabled: "true"`
-- **Drain-surge** — pre-empts evictions from Karpenter, Cluster Autoscaler, and manual `kubectl drain`
+- **Drain-surge** — pre-empts evictions from Karpenter, Cluster Autoscaler, and manual `kubectl drain` / `kubectl cordon`
 - **Restart-surge** — unblocks PDB-stuck `kubectl argo rollouts restart` on single-replica Rollouts
 - **HPA-aware** — patches `minReplicas` instead of `spec.replicas` when an HPA is attached; restores on completion
 - **ArgoCD / FluxCD friendly** — detects external resets of `spec.replicas` mid-surge and re-applies (with `ignoreDifferences` documented)
@@ -64,7 +65,7 @@ See [What you need to do](#what-you-need-to-do) for the full opt-in checklist (A
 - One of the following node lifecycle managers (or manual drain):
   - [Karpenter](https://karpenter.sh/) >= 0.32
   - [Cluster Autoscaler](https://github.com/kubernetes/autoscaler)
-  - Manual `kubectl drain` / `kubectl taint`
+  - Manual `kubectl drain` / `kubectl cordon` / `kubectl taint`
 - [Argo Rollouts](https://argoproj.github.io/argo-rollouts/) >= 1.5 (only if using Rollout workloads)
 
 ## How it works
@@ -291,7 +292,7 @@ resource "helm_release" "k8s_drain_surge" {
 
 ### Devcontainer (recommended)
 
-The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.22, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
+The repo ships a [Dev Container](https://containers.dev/) so the whole toolchain (Go 1.25, `make`, dependencies) is reproducible and matches CI exactly. You don't need Go installed on the host.
 
 Requirements: VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension (or any editor that supports the devcontainer spec), and Docker.
 
@@ -299,7 +300,7 @@ Setup:
 
 1. Open the project in VS Code.
 2. `Cmd+Shift+P` → **Dev Containers: Reopen in Container**.
-3. First open builds the image (`golang:1.22-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
+3. First open builds the image (`golang:1.25-bookworm`) and runs `.devcontainer/bootstrap.sh`, which executes the same `make` targets CI runs: `go mod download`, `make tidy`, `make vet`, `make test`, `make build`. Takes a few minutes the first time; subsequent opens are instant.
 
 What's persisted across rebuilds:
 
