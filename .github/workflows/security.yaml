@@ -49,7 +49,7 @@ jobs:
 
       - if: matrix.scanner == 'trivy-fs'
         name: Trivy filesystem scan (go.sum + workflows + Dockerfile)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -72,7 +72,7 @@ jobs:
 
       - if: matrix.scanner == 'trivy-image'
         name: Trivy image scan (final controller image)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: k8s-drain-surge:scan
           severity: CRITICAL,HIGH
