@@ -22,6 +22,10 @@ const (
 	LogFieldDrainNode   = "drainNode"
 	LogFieldRestartAt   = "restartAt"
 
+	LogFieldElapsed     = "elapsed"
+	LogFieldGracePeriod = "gracePeriod"
+	LogFieldRemaining   = "remaining"
+
 	LogFieldRolloutPhase   = "rolloutPhase"
 	LogFieldRolloutMessage = "rolloutMessage"
 )

@@ -151,12 +151,47 @@ func (r *RolloutReconciler) handleRestartPending(ctx context.Context, wl *Rollou
 		return ctrl.Result{}, err
 	}
 
+	restartPending := wl.Rollout.Spec.RestartAt != nil &&
+		!wl.Rollout.Status.RestartedAt.Equal(wl.Rollout.Spec.RestartAt)
+
 	if !isRestartStuck(wl.Rollout, pods, r.Config.RestartSurgeGracePeriod, r.timeNow()) {
-		if wl.Rollout.Spec.RestartAt != nil && !wl.Rollout.Status.RestartedAt.Equal(wl.Rollout.Spec.RestartAt) {
-			// Restart in flight but within grace: re-check after grace expires
-			// instead of waiting for the next pod/rollout event.
-			return ctrl.Result{RequeueAfter: r.Config.RestartSurgeGracePeriod}, nil
+		if !restartPending {
+			return ctrl.Result{}, nil
 		}
+		restartAt := wl.Rollout.Spec.RestartAt.Time
+		restartAtRFC := restartAt.Format(time.RFC3339)
+		elapsed := r.timeNow().Sub(restartAt)
+		remaining := r.Config.RestartSurgeGracePeriod - elapsed
+
+		if remaining > 0 {
+			// Emit one Info per restartAt observed so operators see the
+			// controller acknowledged the event without flooding logs on
+			// each requeue. The annotation tracks which restartAt we've
+			// already logged; patchReplicasAndAnnotations clears it on the
+			// next patch (e.g. when we transition to scaled-up) because the
+			// merge nullifies any drain annotation key not in the new patch.
+			if meta.Annotations[AnnotationRestartSurgePendingLogged] != restartAtRFC {
+				logger.Info("restart pending, waiting for grace period before triggering surge",
+					LogFieldRestartAt, restartAt,
+					LogFieldElapsed, elapsed.Round(time.Second),
+					LogFieldGracePeriod, r.Config.RestartSurgeGracePeriod,
+					LogFieldRemaining, remaining.Round(time.Second),
+				)
+				if meta.Annotations == nil {
+					meta.Annotations = make(map[string]string)
+				}
+				meta.Annotations[AnnotationRestartSurgePendingLogged] = restartAtRFC
+				if err := wl.Patch(ctx, r.Client); err != nil {
+					return ctrl.Result{}, fmt.Errorf("stamp pending-logged annotation: %w", err)
+				}
+			}
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+		// Grace already elapsed but isRestartStuck is false → no pods still
+		// predate restartAt → Argo's PodRestarter finished without us.
+		logger.Info("restart pending but no stale pods remain, Argo handled it unaided",
+			LogFieldRestartAt, restartAt,
+		)
 		return ctrl.Result{}, nil
 	}
 
