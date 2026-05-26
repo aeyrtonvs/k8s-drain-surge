@@ -48,6 +48,14 @@ spec:
             - --restart-surge-timeout={{ .timeout }}
             {{- end }}
             {{- end }}
+            {{- with .Values.controller.karpenterSurge }}
+            - --karpenter-surge-enabled={{ .enabled }}
+            {{- if .enabled }}
+            - --karpenter-surge-grace-period={{ .gracePeriod }}
+            - --karpenter-surge-timeout={{ .timeout }}
+            - --karpenter-surge-scan-period={{ .scanPeriod }}
+            {{- end }}
+            {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.controller.metricsPort }}

@@ -65,6 +65,18 @@ helm install k8s-drain-surge oci://ghcr.io/aeyrtonvs/charts/k8s-drain-surge \
   --set controller.restartSurge.enabled=true
 ```
 
+### Karpenter-surge (default on)
+
+Enabled by default. Karpenter's disruption controller refuses to taint a node when it predicts a PDB rejection in dry-run, so the standard drain-surge path never fires for single-replica workloads with `minAvailable: 1` PDBs. This mode triggers off the PDB itself (`disruptionsAllowed=0`) and surges 1→2 so Karpenter can consolidate.
+
+It ships on by default because the PDB this controller requires is the exact mechanism that creates the Karpenter stuck case — opting users in to the workaround would transfer to them a problem the controller's own pre-requisite introduces. To opt out:
+
+```bash
+helm install k8s-drain-surge oci://ghcr.io/aeyrtonvs/charts/k8s-drain-surge \
+  --namespace kube-system \
+  --set controller.karpenterSurge.enabled=false
+```
+
 ## Verifying signatures
 
 Release artifacts (controller image and Helm chart) are signed with [cosign](https://docs.sigstore.dev/) using GitHub Actions OIDC keyless signing. To verify before installing:
@@ -153,6 +165,10 @@ Common values. The full schema, including types and constraints, lives in [`valu
 | `controller.restartSurge.enabled` | `false` | Enable restart-surge protection (Argo Rollouts only) |
 | `controller.restartSurge.gracePeriod` | `60s` | Wait this long after `spec.restartAt` before surging — lets Argo finish on its own when PDB permits |
 | `controller.restartSurge.timeout` | `10m` | Total budget for one restart-surge operation |
+| `controller.karpenterSurge.enabled` | `false` | Enable karpenter-surge (PDB-triggered pre-taint surge) |
+| `controller.karpenterSurge.gracePeriod` | `60s` | Time PDB must stay at `disruptionsAllowed=0` before surging |
+| `controller.karpenterSurge.timeout` | `10m` | Total budget for one karpenter-surge operation |
+| `controller.karpenterSurge.scanPeriod` | `60s` | Backup ticker that scans PDBs cluster-wide (covers informer desync) |
 | `priorityClassName` | `system-cluster-critical` | Pod `priorityClassName` |
 | `nodeSelector` | `{ kubernetes.io/os: linux }` | Node selector for controller pods |
 | `tolerations` | `[{ key: CriticalAddonsOnly, operator: Exists }]` | Tolerations applied to controller pods |
