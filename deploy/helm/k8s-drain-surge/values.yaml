@@ -34,6 +34,7 @@ nodeSelector:
 tolerations:
   - key: CriticalAddonsOnly
     operator: Exists
+affinity: {}
 
 priorityClassName: system-cluster-critical
 
