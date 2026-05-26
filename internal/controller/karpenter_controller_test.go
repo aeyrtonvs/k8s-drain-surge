@@ -57,6 +57,30 @@ func newKarpenterReconciler(now time.Time, objs ...client.Object) (*KarpenterSur
 	}, c
 }
 
+// newKarpenterReconcilerWithEvents builds a reconciler whose APIReader is a
+// fake client indexed on Event.reason, so the NodePool budget gate can be
+// exercised. The events are loaded into that reader.
+func newKarpenterReconcilerWithEvents(now time.Time, events []client.Object, objs ...client.Object) (*KarpenterSurgeReconciler, client.Client) {
+	scheme := karpenterTestScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	readerBuilder := fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&corev1.Event{}, "reason", func(o client.Object) []string {
+			return []string{o.(*corev1.Event).Reason}
+		})
+	if len(events) > 0 {
+		readerBuilder = readerBuilder.WithObjects(events...)
+	}
+	reader := readerBuilder.Build()
+	return &KarpenterSurgeReconciler{
+		Client:    c,
+		APIReader: reader,
+		Scheme:    scheme,
+		Recorder:  record.NewFakeRecorder(100),
+		Config:    karpenterTestConfig(),
+		now:       func() time.Time { return now },
+	}, c
+}
+
 func newKarpenterDeployment(name, namespace string, replicas int32) *appsv1.Deployment {
 	r := replicas
 	return &appsv1.Deployment{
@@ -626,5 +650,139 @@ func TestKarpenterSurge_OrphanRecovery_PDBRecovered(t *testing.T) {
 	got := mustGetDeployment(t, ctx, c, "default", "app")
 	if _, ok := got.Annotations[AnnotationKarpenterSurgeState]; ok {
 		t.Fatal("expected orphan annotations cleared when PDB recovered")
+	}
+}
+
+func mkEvent(name, kind, objName, reason, msg string, last time.Time) *corev1.Event {
+	return &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Reason:         reason,
+		InvolvedObject: corev1.ObjectReference{Kind: kind, Name: objName},
+		Message:        msg,
+		LastTimestamp:  metav1.NewTime(last),
+	}
+}
+
+// TestKarpenterSurge_BudgetStale_SurgeProceeds: a budget-block event that is
+// older than the freshness window must NOT gate the surge. With the budget
+// gate transparent, the normal grace-then-surge flow runs to scaled-up.
+func TestKarpenterSurge_BudgetStale_SurgeProceeds(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 26, 19, 30, 0, 0, time.UTC)
+	dep := newKarpenterDeployment("app", "default", 1)
+	pdb := newKarpenterPDB("app-pdb", "default", "app", 0)
+	pod := newKarpenterPod("app-old", "default", "app", "node-1", true)
+	node := newCleanNode("node-1")
+	node.Labels = map[string]string{"karpenter.sh/nodepool": "main-ondemand"}
+
+	// Stale relative to BOTH the prime clock and the post-grace clock
+	// (10 minutes old > 2×scanPeriod=120s), so the budget gate never blocks.
+	budgetEvent := mkEvent("ev1", "NodePool", "main-ondemand", "DisruptionBlocked",
+		"No allowed disruptions for disruption reason Underutilized due to blocking budget",
+		now.Add(-10*time.Minute))
+
+	r, c := newKarpenterReconcilerWithEvents(now, []client.Object{budgetEvent}, dep, pdb, pod, node)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "default"}}
+
+	// Prime grace tracker.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	// Advance past grace; stale budget event still present but ignored.
+	r.now = func() time.Time { return now.Add(2 * time.Minute) }
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := mustGetDeployment(t, ctx, c, "default", "app")
+	if got.Annotations[AnnotationKarpenterSurgeState] != string(DrainStateScaledUp) {
+		t.Fatalf("expected surge to proceed when budget event is stale, got state=%q", got.Annotations[AnnotationKarpenterSurgeState])
+	}
+}
+
+// TestKarpenterSurge_BudgetBlocked_FreshEvent: a budget-block event fresh
+// relative to the reconcile clock blocks the surge.
+func TestKarpenterSurge_BudgetBlocked_FreshEvent(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 26, 19, 30, 0, 0, time.UTC)
+	dep := newKarpenterDeployment("app", "default", 1)
+	pdb := newKarpenterPDB("app-pdb", "default", "app", 0)
+	pod := newKarpenterPod("app-old", "default", "app", "node-1", true)
+	node := newCleanNode("node-1")
+	node.Labels = map[string]string{"karpenter.sh/nodepool": "main-ondemand"}
+
+	// Event fresh relative to the post-grace clock (now+2m).
+	budgetEvent := mkEvent("ev1", "NodePool", "main-ondemand", "DisruptionBlocked",
+		"No allowed disruptions for disruption reason Underutilized due to blocking budget",
+		now.Add(2*time.Minute-10*time.Second))
+
+	r, c := newKarpenterReconcilerWithEvents(now, []client.Object{budgetEvent}, dep, pdb, pod, node)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "default"}}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	r.now = func() time.Time { return now.Add(2 * time.Minute) }
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got := mustGetDeployment(t, ctx, c, "default", "app")
+	if _, ok := got.Annotations[AnnotationKarpenterSurgeState]; ok {
+		t.Fatalf("expected NO surge while budget blocks consolidation, got state=%q", got.Annotations[AnnotationKarpenterSurgeState])
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 1 {
+		t.Fatalf("expected replicas unchanged at 1, got %v", got.Spec.Replicas)
+	}
+}
+
+// TestKarpenterSurge_BudgetOpens_SurgesPromptly is the regression test for the
+// grace-reset bug: while the NodePool budget blocks, the controller must NOT
+// reset the grace tracker, so once the budget window opens the surge fires
+// promptly (a single reconcile) rather than waiting a fresh full grace period.
+func TestKarpenterSurge_BudgetOpens_SurgesPromptly(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 26, 19, 30, 0, 0, time.UTC)
+	dep := newKarpenterDeployment("app", "default", 1)
+	pdb := newKarpenterPDB("app-pdb", "default", "app", 0)
+	pod := newKarpenterPod("app-old", "default", "app", "node-1", true)
+	node := newCleanNode("node-1")
+	node.Labels = map[string]string{"karpenter.sh/nodepool": "main-ondemand"}
+
+	// Budget-block event at t0. ttl = 2*scanPeriod = 120s.
+	budgetEvent := mkEvent("ev1", "NodePool", "main-ondemand", "DisruptionBlocked",
+		"No allowed disruptions for disruption reason Underutilized due to blocking budget",
+		now)
+
+	r, c := newKarpenterReconcilerWithEvents(now, []client.Object{budgetEvent}, dep, pdb, pod, node)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "default"}}
+
+	// Step 1: prime grace tracker at t0.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+
+	// Step 2: grace elapsed (t0+90s > 60s grace) but budget event still fresh
+	// (90s <= 120s ttl) → budget blocks → no surge. Grace must NOT reset.
+	r.now = func() time.Time { return now.Add(90 * time.Second) }
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("blocked reconcile: %v", err)
+	}
+	got := mustGetDeployment(t, ctx, c, "default", "app")
+	if _, ok := got.Annotations[AnnotationKarpenterSurgeState]; ok {
+		t.Fatalf("expected no surge while budget blocks, got state=%q", got.Annotations[AnnotationKarpenterSurgeState])
+	}
+
+	// Step 3: budget window opens — event is now stale (t0+5m, 300s > 120s
+	// ttl). Because the grace tracker was NOT reset, the surge must fire on
+	// THIS reconcile, not after another full grace period.
+	r.now = func() time.Time { return now.Add(5 * time.Minute) }
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("open reconcile: %v", err)
+	}
+	got = mustGetDeployment(t, ctx, c, "default", "app")
+	if got.Annotations[AnnotationKarpenterSurgeState] != string(DrainStateScaledUp) {
+		t.Fatalf("expected prompt surge once budget opened (grace not reset), got state=%q", got.Annotations[AnnotationKarpenterSurgeState])
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 2 {
+		t.Fatalf("expected replicas=2 after prompt surge, got %v", got.Spec.Replicas)
 	}
 }

@@ -1,13 +1,89 @@
 package controller
 
 import (
+	"strings"
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
+
+// karpenterBudgetBlockSubstr is the marker Karpenter puts in the message of
+// the DisruptionBlocked event it emits against a NodePool when a disruption
+// budget (spec.disruption.budgets) forbids consolidation right now (e.g.
+// `nodes: "0"` outside a scheduled window). Distinct from the per-Node/
+// NodeClaim PDB-rejection event ("Pdb prevents pod evictions").
+const karpenterBudgetBlockSubstr = "blocking budget"
+
+// budgetBlocksConsolidation reports whether Karpenter is currently unable to
+// consolidate the given NodePool because of a disruption *budget* (not a PDB).
+//
+// Karpenter emits DisruptionBlocked over the NodePool object with a message
+// containing "blocking budget" while a budget forbids disruption, and retries
+// every pollingPeriod (10s). We treat the budget as blocking if such an event
+// exists for this NodePool with lastTimestamp within ttl. The discriminant is
+// structural first — the event must be on involvedObject.kind == "NodePool"
+// (PDB-rejection events are emitted on Node/NodeClaim) — and the substring is
+// a secondary confirmation, so a future wording tweak upstream does not
+// silently flip the gate.
+//
+// Returns false when no fresh budget-block event is found, meaning the budget
+// is (probably) open and a surge can usefully unblock the PDB. now and ttl are
+// injected for testability.
+func budgetBlocksConsolidation(events []corev1.Event, nodePool string, now time.Time, ttl time.Duration) bool {
+	if nodePool == "" {
+		return false
+	}
+	for i := range events {
+		e := &events[i]
+		if e.Reason != "DisruptionBlocked" {
+			continue
+		}
+		if e.InvolvedObject.Kind != "NodePool" || e.InvolvedObject.Name != nodePool {
+			continue
+		}
+		if !strings.Contains(e.Message, karpenterBudgetBlockSubstr) {
+			continue
+		}
+		ts := eventLastSeen(e)
+		if ts.IsZero() {
+			// No usable timestamp. Do NOT treat as blocking: a stuck/garbage
+			// event with no timestamp would otherwise latch the gate closed
+			// forever (no ttl can expire it), permanently denying surge. The
+			// failure is asymmetric — blocking-on-uncertain risks permanent
+			// denial that needs human intervention, while not-blocking risks
+			// at most one churn cycle that self-heals on the next real
+			// (timestamped) event. Karpenter's recorder always stamps
+			// EventTime, so this path is effectively unreachable for genuine
+			// events anyway.
+			continue
+		}
+		if now.Sub(ts) <= ttl {
+			return true
+		}
+	}
+	return false
+}
+
+// eventLastSeen returns the most recent timestamp on an Event, preferring
+// the series/lastTimestamp fields and falling back to eventTime. Core v1
+// Events populate LastTimestamp; the newer events.k8s.io shape uses
+// EventTime/series, surfaced here through the corev1 alias fields.
+func eventLastSeen(e *corev1.Event) time.Time {
+	if !e.LastTimestamp.IsZero() {
+		return e.LastTimestamp.Time
+	}
+	if e.Series != nil && !e.Series.LastObservedTime.IsZero() {
+		return e.Series.LastObservedTime.Time
+	}
+	if !e.EventTime.IsZero() {
+		return e.EventTime.Time
+	}
+	return time.Time{}
+}
 
 // pdbWouldAllowSurge reports whether scaling the workload from current to
 // target replicas would make the PDB allow at least one disruption.

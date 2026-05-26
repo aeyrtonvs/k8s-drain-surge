@@ -110,11 +110,17 @@ func main() {
 		if !rolloutsPresent {
 			log.Info("karpenter-surge: Argo Rollouts CRD not installed, restricting to Deployments")
 		}
+		apiReader := mgr.GetAPIReader()
+		if apiReader == nil {
+			log.Error(nil, "karpenter-surge enabled but manager returned a nil APIReader; the NodePool budget gate cannot function")
+			os.Exit(1)
+		}
 		karpenterReconciler = &controller.KarpenterSurgeReconciler{
-			Client:           mgr.GetClient(),
-			Scheme:           mgr.GetScheme(),
-			Recorder:         mgr.GetEventRecorderFor(controller.ControllerName),
-			Config:           cfg,
+			Client:            mgr.GetClient(),
+			APIReader:         apiReader,
+			Scheme:            mgr.GetScheme(),
+			Recorder:          mgr.GetEventRecorderFor(controller.ControllerName),
+			Config:            cfg,
 			RolloutsAvailable: rolloutsPresent,
 		}
 		if err := karpenterReconciler.SetupWithManager(mgr); err != nil {

@@ -490,6 +490,7 @@ spec:
 | `KarpenterSurgeSkipped … PDBOverConstrained` | PDB requires all replicas available (`minAvailable: N` with `replicas: N`, or `100%`). Surging would not unblock anything | Fix the PDB — for a single-replica workload, use `minAvailable: 1` (absolute), not a 100% percent expression |
 | `KarpenterSurgeAborted` after 10 minutes and the original node is still stuck | Karpenter likely consolidated the *surge* pod instead of the original (the MVP does not bias scheduling — see R5 in `docs/specs/plan-karpenter-pretaint-surge.md`) | Workaround: `kubectl cordon <original-node>` to force the drain-surge path |
 | `KarpenterSurgeYielded … ExternalScaleChange` | The operator or ArgoCD modified `spec.replicas` (or the HPA's `minReplicas`) mid-cycle. The controller honors the new value and steps aside | No action — the controller only undoes what it applied |
+| `KarpenterSurgeSkipped … NodePoolBudgetBlocked` and Karpenter logs `… due to blocking budget` | Karpenter cannot consolidate the workload's NodePool right now because a **disruption budget** (`spec.disruption.budgets`, e.g. `nodes: "0"` outside a scheduled window) forbids it — independent of the PDB | Expected when outside the budget's allowed window. The controller deliberately does **not** surge here, to avoid flapping replicas 1→2→1 while no consolidation can happen. If you want consolidation during this time, widen the NodePool's disruption budget |
 
 Manual cleanup if replicas are stuck:
 
