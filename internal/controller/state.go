@@ -34,6 +34,14 @@ const (
 	// clear which operation owns the workload.
 	AnnotationRestartSurgeState = "k8s-drain-surge.io/restart-surge-state"
 	AnnotationRestartSurgeStart = "k8s-drain-surge.io/restart-surge-start"
+
+	// AnnotationRestartSurgePendingLogged records the spec.restartAt value
+	// for which we have already emitted a "waiting for grace period" Info
+	// log. Prevents duplicating that log on every requeue while a restart
+	// is in flight. Cleared automatically by the merge patch in
+	// patchReplicasAndAnnotations when the reconcile transitions to the
+	// state machine or a new restartAt arrives.
+	AnnotationRestartSurgePendingLogged = "k8s-drain-surge.io/restart-surge-pending-logged"
 )
 
 const reasonNewRSAvailable = "NewReplicaSetAvailable"
@@ -50,6 +58,7 @@ var drainAnnotationKeys = []string{
 	AnnotationHPAOriginalMinReplicas,
 	AnnotationRestartSurgeState,
 	AnnotationRestartSurgeStart,
+	AnnotationRestartSurgePendingLogged,
 }
 
 // restartSurgeFullKeys are cleared on a successful restart-surge cycle or
