@@ -155,6 +155,8 @@ Common values. The full schema, including types and constraints, lives in [`valu
 | `controller.restartSurge.timeout` | `10m` | Total budget for one restart-surge operation |
 | `priorityClassName` | `system-cluster-critical` | Pod `priorityClassName` |
 | `nodeSelector` | `{ kubernetes.io/os: linux }` | Node selector for controller pods |
+| `tolerations` | `[{ key: CriticalAddonsOnly, operator: Exists }]` | Tolerations applied to controller pods |
+| `affinity` | `{}` | Pod affinity rules (full `corev1.Affinity`: nodeAffinity / podAffinity / podAntiAffinity) |
 | `resources.requests` | `cpu 10m, memory 64Mi` | A reactive controller idles most of the time; the default is sized for that |
 | `resources.limits` | `memory 128Mi` (no CPU limit) | No CPU limit by design — throttling a reactive controller hurts reconcile latency during the moments it matters most |
 

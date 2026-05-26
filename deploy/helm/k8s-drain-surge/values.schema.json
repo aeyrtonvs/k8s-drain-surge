@@ -141,6 +141,11 @@
       "description": "Tolerations applied to controller pods.",
       "items": { "type": "object" }
     },
+    "affinity": {
+      "type": "object",
+      "default": {},
+      "description": "Affinity rules applied to controller pods. Empty object disables. Pass a full corev1.Affinity structure (nodeAffinity / podAffinity / podAntiAffinity)."
+    },
     "priorityClassName": {
       "type": "string",
       "default": "system-cluster-critical",
