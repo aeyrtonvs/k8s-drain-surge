@@ -81,20 +81,27 @@ func (r *RolloutReconciler) reconcileWorkload(ctx context.Context, wl *RolloutWo
 	currentState := DrainState(annotations[AnnotationRestartSurgeState])
 	isActive := currentState != DrainStateNone && currentState != DrainStateDone
 
-	// Stale/timeout abort, mirroring NodeReconciler.reconcileWorkload.
+	// Stale/timeout abort, mirroring NodeReconciler.reconcileWorkload. A
+	// missing/unparseable start annotation while state is active is itself
+	// an abort condition — without it the operation has no timeout and
+	// would run forever.
 	if isActive {
-		if start, ok := parseRestartSurgeStart(annotations); ok {
-			elapsed := r.timeNow().Sub(start)
-			if elapsed > 3*r.Config.RestartSurgeTimeout {
-				logger.Info("stale restart-surge state detected, force aborting", LogFieldState, currentState)
-				r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "RestartSurgeStale", "Force aborting stale restart-surge operation")
-				return r.abortRestartSurge(ctx, wl)
-			}
-			if elapsed > r.Config.RestartSurgeTimeout {
-				logger.Info("restart-surge operation timed out", LogFieldState, currentState)
-				r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "RestartSurgeTimeout", "Restart-surge operation timed out")
-				return r.abortRestartSurge(ctx, wl)
-			}
+		start, ok := parseRestartSurgeStart(annotations)
+		if !ok {
+			logger.Info("restart-surge state present without valid start annotation, force aborting", LogFieldState, currentState)
+			r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "RestartSurgeTimeout", "Restart-surge state %q present without parseable start annotation", currentState)
+			return r.abortRestartSurge(ctx, wl)
+		}
+		elapsed := r.timeNow().Sub(start)
+		if elapsed > 3*r.Config.RestartSurgeTimeout {
+			logger.Info("stale restart-surge state detected, force aborting", LogFieldState, currentState)
+			r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "RestartSurgeStale", "Force aborting stale restart-surge operation")
+			return r.abortRestartSurge(ctx, wl)
+		}
+		if elapsed > r.Config.RestartSurgeTimeout {
+			logger.Info("restart-surge operation timed out", LogFieldState, currentState)
+			r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "RestartSurgeTimeout", "Restart-surge operation timed out")
+			return r.abortRestartSurge(ctx, wl)
 		}
 	}
 
@@ -181,7 +188,7 @@ func (r *RolloutReconciler) handleRestartPending(ctx context.Context, wl *Rollou
 					meta.Annotations = make(map[string]string)
 				}
 				meta.Annotations[AnnotationRestartSurgePendingLogged] = restartAtRFC
-				if err := wl.Patch(ctx, r.Client); err != nil {
+				if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 					return ctrl.Result{}, fmt.Errorf("stamp pending-logged annotation: %w", err)
 				}
 			}
@@ -250,7 +257,7 @@ func (r *RolloutReconciler) handleRestartPending(ctx context.Context, wl *Rollou
 		// or the next reconcile fires on a stale Rollout cache, the Rollout
 		// annotations are the source of truth for HPAOriginalMinReplicas. The
 		// HPA-already-at-target guard above handles the inverse case.
-		if err := wl.Patch(ctx, r.Client); err != nil {
+		if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch rollout for restart-surge scale-up: %w", err)
 		}
 		if err := PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpa.Name, originalReplicas+1); err != nil {
@@ -265,7 +272,7 @@ func (r *RolloutReconciler) handleRestartPending(ctx context.Context, wl *Rollou
 	logger.Info("scaled up rollout for restart-surge", LogFieldFrom, originalReplicas, LogFieldTo, originalReplicas+1, LogFieldRestartAt, wl.Rollout.Spec.RestartAt.Time)
 	r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "RestartSurgeStart", "Restart blocked by PDB, scaled from %d to %d", originalReplicas, originalReplicas+1)
 
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch rollout for restart-surge scale-up: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -291,7 +298,7 @@ func (r *RolloutReconciler) handleRestartScaleUp(ctx context.Context, wl *Rollou
 	logger.Info("replicas were reset, competing controller detected — re-applying restart-surge scale-up")
 	r.Recorder.Eventf(wl.Object(), corev1.EventTypeWarning, "CompetingController", "Replicas were reset externally during restart-surge")
 	wl.SetReplicas(original + 1)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("re-apply restart-surge scale-up: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -313,7 +320,7 @@ func (r *RolloutReconciler) handleRestartWaitReady(ctx context.Context, wl *Roll
 		if wl.GetReplicas() <= original {
 			logger.Info("replicas were reset externally during wait-ready, re-applying restart-surge scale-up")
 			wl.SetReplicas(original + 1)
-			if err := wl.Patch(ctx, r.Client); err != nil {
+			if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 				return ctrl.Result{}, fmt.Errorf("re-apply restart-surge scale-up: %w", err)
 			}
 			return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -340,7 +347,7 @@ func (r *RolloutReconciler) handleRestartWaitReady(ctx context.Context, wl *Roll
 		logger.Info("surge replica ready, allowing Argo PodRestarter to proceed", LogFieldReplicas, readyCount)
 		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "RestartSurgeReady", "Surge replica ready; Argo PodRestarter can now evict the stale pod")
 		meta.Annotations[AnnotationRestartSurgeState] = string(DrainStateReady)
-		if err := wl.Patch(ctx, r.Client); err != nil {
+		if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch rollout to ready: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -387,7 +394,7 @@ func (r *RolloutReconciler) handleRestartWaitForArgo(ctx context.Context, wl *Ro
 		wl.SetReplicas(original)
 	}
 	meta.Annotations[AnnotationRestartSurgeState] = string(DrainStateDraining)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch rollout for restart-surge scale-down: %w", err)
 	}
 	logger.Info("Argo PodRestarter completed restart, scaling down")
@@ -408,7 +415,7 @@ func (r *RolloutReconciler) handleRestartScaleDown(ctx context.Context, wl *Roll
 		wl.SetReplicas(original)
 	}
 	meta.Annotations[AnnotationRestartSurgeState] = string(DrainStateDone)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch rollout to done: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -419,7 +426,7 @@ func (r *RolloutReconciler) handleRestartCleanup(ctx context.Context, wl *Rollou
 	meta := wl.GetObjectMeta()
 
 	clearRestartSurgeAnnotations(meta.Annotations)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch rollout for restart-surge cleanup: %w", err)
 	}
 	logger.Info("restart-surge operation completed")
@@ -438,7 +445,7 @@ func (r *RolloutReconciler) abortRestartSurge(ctx context.Context, wl *RolloutWo
 		wl.SetReplicas(original)
 	}
 	clearRestartSurgeAnnotations(meta.Annotations)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("abort restart-surge: %w", err)
 	}
 	logger.Info("aborted restart-surge operation")
@@ -460,7 +467,7 @@ func (r *RolloutReconciler) yieldToDrain(ctx context.Context, wl *RolloutWorkloa
 		}
 	}
 	clearRestartSurgeExclusiveAnnotations(meta.Annotations)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, restartSurgeOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("yield to drain: %w", err)
 	}
 	logger.Info("yielded restart-surge to drain")

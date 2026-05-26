@@ -127,6 +127,33 @@
               "description": "Total budget for one restart-surge operation. Abort and restore on overrun."
             }
           }
+        },
+        "karpenterSurge": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Karpenter pre-taint surge: when Karpenter's *disruption* controller aborts pre-taint because a PDB would block eviction in dry-run, we surge 1→2 so the PDB allows consolidation. Trigger is the PDB (disruptionsAllowed=0), not a Karpenter Event.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable karpenter-surge. On by default: the PDB this controller requires is precisely the mechanism that triggers the Karpenter pre-taint stuck case, so leaving it off would transfer that problem to operators. Set to false only if you have an alternative remediation in place."
+            },
+            "gracePeriod": {
+              "allOf": [{ "$ref": "#/$defs/goDuration" }],
+              "default": "60s",
+              "description": "Time a PDB must remain at disruptionsAllowed=0 before triggering a surge. 60s ≈ 6 Karpenter pollingPeriod cycles — discards transient blocks."
+            },
+            "timeout": {
+              "allOf": [{ "$ref": "#/$defs/goDuration" }],
+              "default": "10m",
+              "description": "Total budget for one karpenter-surge operation. Abort and restore on overrun."
+            },
+            "scanPeriod": {
+              "allOf": [{ "$ref": "#/$defs/goDuration" }],
+              "default": "60s",
+              "description": "Absolute backup ticker period that scans PDBs cluster-wide for stuck workloads. Covers PDB informer desync. Must be >= requeueInterval."
+            }
+          }
         }
       }
     },

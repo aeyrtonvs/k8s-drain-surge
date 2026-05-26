@@ -1,0 +1,101 @@
+# Workloads exercising the karpenter-surge skip cases (D, F, G in the spec).
+# All three should result in `KarpenterSurgeSkipped` Events with a specific
+# reason and no replica changes, even when their PDBs sit at
+# `disruptionsAllowed=0`.
+#
+#   kubectl apply -f hack/test-karpenter-skipped-cases.yaml
+#   # Force PDBs into the blocked state (delete the pods) and verify the
+#   # controller emits skip events without modifying replicas:
+#   kubectl get events -w --field-selector reason=KarpenterSurgeSkipped
+#
+# Case D — HPA caps maxReplicas at 1, so surge is not possible.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-skip-case-d
+  annotations:
+    k8s-drain-surge.io/enabled: "true"
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: test-skip-case-d } }
+  template:
+    metadata: { labels: { app: test-skip-case-d } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: test-skip-case-d-pdb }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: test-skip-case-d } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: test-skip-case-d-hpa }
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: test-skip-case-d
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 80 }
+# Case F — replicas=2 with minAvailable=2; surging to 3 still satisfies
+# the PDB but the workload is not single-replica (gate 5 rejects).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-skip-case-f
+  annotations:
+    k8s-drain-surge.io/enabled: "true"
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: test-skip-case-f } }
+  template:
+    metadata: { labels: { app: test-skip-case-f } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: test-skip-case-f-pdb }
+spec:
+  minAvailable: 2
+  selector: { matchLabels: { app: test-skip-case-f } }
+# Case G — PDB minAvailable: 100% (or equivalent). pdbWouldAllowSurge
+# returns false for any target, so the controller skips with reason
+# `PDBOverConstrained`.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-skip-case-g
+  annotations:
+    k8s-drain-surge.io/enabled: "true"
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: test-skip-case-g } }
+  template:
+    metadata: { labels: { app: test-skip-case-g } }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: test-skip-case-g-pdb }
+spec:
+  minAvailable: 100%
+  selector: { matchLabels: { app: test-skip-case-g } }

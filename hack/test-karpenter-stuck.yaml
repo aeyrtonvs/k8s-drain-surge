@@ -1,0 +1,60 @@
+# Sample workload for manual karpenter-surge testing.
+#
+# Reproduces the case the controller handles: a single-replica Deployment with
+# a `minAvailable: 1` PDB. When `disruptionsAllowed == 0`, Karpenter's
+# disruption controller aborts pre-taint — the standard drain-surge path never
+# fires.
+#
+# To exercise the controller without a real Karpenter consolidation, you can
+# drive the PDB into the blocked state by deleting the only Ready pod (or
+# scaling another way that briefly breaks availability) and observe the
+# state machine:
+#
+#   kubectl apply -f hack/test-karpenter-stuck.yaml
+#   # Wait for the Deployment to be Available, then watch:
+#   kubectl get events -w --field-selector involvedObject.name=test-karpenter-stuck
+#   # Drop a pod to push the PDB into disruptionsAllowed=0:
+#   kubectl delete pod -l app=test-karpenter-stuck --grace-period=0 --force
+#   # After --karpenter-surge-grace-period (60s default) the controller should
+#   # emit KarpenterSurge and scale 1→2; once the second pod is Ready, the
+#   # PDB unblocks and the controller scales back.
+#
+# Run the controller with --karpenter-surge-enabled=true for this sample to
+# do anything.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-karpenter-stuck
+  annotations:
+    k8s-drain-surge.io/enabled: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-karpenter-stuck
+  template:
+    metadata:
+      labels:
+        app: test-karpenter-stuck
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 2
+            periodSeconds: 3
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: test-karpenter-stuck-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: test-karpenter-stuck

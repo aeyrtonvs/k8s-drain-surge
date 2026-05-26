@@ -128,7 +128,7 @@ func FindMatchingHPA(ctx context.Context, c client.Client, namespace, workloadNa
 
 // PatchHPAMinReplicas patches the HPA's minReplicas to the given value.
 // Callers MUST persist the workload annotations recording the pre-surge
-// minReplicas (via wl.Patch) BEFORE invoking this, so the workload is the
+// minReplicas (via wl.PatchOwned) BEFORE invoking this, so the workload is the
 // authoritative record of the original value if a subsequent reconcile fires
 // before the workload watch propagates.
 func PatchHPAMinReplicas(ctx context.Context, c client.Client, namespace, hpaName string, minReplicas int32) error {

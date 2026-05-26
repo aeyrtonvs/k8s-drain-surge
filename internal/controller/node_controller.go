@@ -229,7 +229,7 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 		// or the next reconcile fires on a stale workload cache, the workload
 		// annotations are the source of truth for HPAOriginalMinReplicas. The
 		// HPA-already-at-target guard above handles the inverse case.
-		if err := wl.Patch(ctx, r.Client); err != nil {
+		if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch workload for scale-up: %w", err)
 		}
 		if err := PatchHPAMinReplicas(ctx, r.Client, meta.Namespace, hpa.Name, originalReplicas+1); err != nil {
@@ -244,7 +244,7 @@ func (r *NodeReconciler) handlePending(ctx context.Context, wl DrainableWorkload
 	logger.Info("scaled up workload", LogFieldFrom, originalReplicas, LogFieldTo, originalReplicas+1)
 	r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "DrainSurge", "Scaled up from %d to %d for node drain on %s", originalReplicas, originalReplicas+1, nodeName)
 
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch workload for scale-up: %w", err)
 	}
 
@@ -270,7 +270,7 @@ func (r *NodeReconciler) handleScaleUp(ctx context.Context, wl DrainableWorkload
 	}
 
 	meta.Annotations[AnnotationDrainState] = string(DrainStateScaledUp)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch workload for scale-up (reentrant): %w", err)
 	}
 
@@ -291,7 +291,7 @@ func (r *NodeReconciler) handleWaitReady(ctx context.Context, wl DrainableWorklo
 		if wl.GetReplicas() <= original {
 			logger.Info("replicas were reset externally, re-applying scale-up")
 			wl.SetReplicas(original + 1)
-			if err := wl.Patch(ctx, r.Client); err != nil {
+			if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 				return ctrl.Result{}, fmt.Errorf("re-apply scale-up: %w", err)
 			}
 			return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -306,7 +306,7 @@ func (r *NodeReconciler) handleWaitReady(ctx context.Context, wl DrainableWorklo
 	if ready {
 		logger.Info("new pod is ready on another node")
 		meta.Annotations[AnnotationDrainState] = string(DrainStateReady)
-		if err := wl.Patch(ctx, r.Client); err != nil {
+		if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch workload to ready: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -342,7 +342,7 @@ func (r *NodeReconciler) handleWaitEviction(ctx context.Context, wl DrainableWor
 			wl.SetReplicas(original)
 		}
 		meta.Annotations[AnnotationDrainState] = string(DrainStateDraining)
-		if err := wl.Patch(ctx, r.Client); err != nil {
+		if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch workload for scale-down: %w", err)
 		}
 		logger.Info("old pod evicted, scaling down")
@@ -367,7 +367,7 @@ func (r *NodeReconciler) handleScaleDown(ctx context.Context, wl DrainableWorklo
 		wl.SetReplicas(original)
 	}
 	meta.Annotations[AnnotationDrainState] = string(DrainStateDone)
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch workload to done: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
@@ -379,7 +379,7 @@ func (r *NodeReconciler) handleCleanup(ctx context.Context, wl DrainableWorkload
 
 	clearDrainAnnotations(meta.Annotations)
 
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch workload for cleanup: %w", err)
 	}
 	logger.Info("drain operation completed")
@@ -402,7 +402,7 @@ func (r *NodeReconciler) abortWorkload(ctx context.Context, wl DrainableWorkload
 
 	clearDrainAnnotations(meta.Annotations)
 
-	if err := wl.Patch(ctx, r.Client); err != nil {
+	if err := wl.PatchOwned(ctx, r.Client, drainOwnedKeys); err != nil {
 		return ctrl.Result{}, fmt.Errorf("abort workload: %w", err)
 	}
 	logger.Info("aborted drain operation")
