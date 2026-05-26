@@ -43,6 +43,14 @@ type KarpenterSurgeReconciler struct {
 	Recorder record.EventRecorder
 	Config   *config.Config
 
+	// APIReader is an uncached reader (mgr.GetAPIReader). Used only to list
+	// Karpenter's DisruptionBlocked Events for the budget gate, so we avoid
+	// standing up a cluster-wide Event informer (Events are high-volume and
+	// caching them all would balloon controller memory). nil is tolerated:
+	// the budget gate degrades to "not blocked" (logged) when unset, e.g.
+	// in unit tests that exercise other paths.
+	APIReader client.Reader
+
 	// RolloutsAvailable is set by main when the Argo Rollouts CRD is
 	// present in the target cluster. When false, the reconciler skips the
 	// Rollout watch, Rollout Gets in Reconcile, and Rollout List in
@@ -256,9 +264,35 @@ func (r *KarpenterSurgeReconciler) handleKarpenterPending(ctx context.Context, w
 		return ctrl.Result{}, nil
 	}
 
-	// Gate 11: grace period vencido.
+	// Gate 11: grace period elapsed. Checked BEFORE the NodePool-budget gate
+	// because it is an in-memory check, whereas the budget gate resolves
+	// nodes and lists Events from the apiserver — no point paying that cost
+	// on every reconcile during the grace window when the workload is not
+	// yet eligible to surge.
 	if !elapsed {
 		logger.V(1).Info("grace period not yet elapsed for blocked PDB", LogFieldKarpenterPDB, pdb.Namespace+"/"+pdb.Name, LogFieldGracePeriod, r.Config.KarpenterSurgeGracePeriod)
+		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
+	}
+
+	// Gate 11b: a NodePool disruption *budget* must not be blocking Karpenter
+	// right now. The PDB being at disruptionsAllowed=0 is necessary but not
+	// sufficient — if Karpenter cannot consolidate this workload's NodePool
+	// because of a budget (e.g. `nodes: "0"` outside a schedule window), a
+	// surge would just flap replicas 1→2→1 forever without any node ever
+	// consolidating. We skip but deliberately DO NOT reset the grace tracker:
+	// the PDB is still continuously blocked (the grace timer measures exactly
+	// that), only consolidation is gated. Forgetting here would conflate
+	// "PDB unblocked" with "budget blocked" and force a fresh full grace
+	// period every time the budget window opens — delaying every legitimate
+	// surge. Keeping the elapsed grace lets the surge fire promptly once the
+	// budget opens.
+	budgetBlocked, err := r.workloadNodePoolBudgetBlocked(ctx, meta.Namespace, wl.GetPodSelector())
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if budgetBlocked {
+		logger.V(1).Info("NodePool disruption budget is blocking consolidation, skipping surge to avoid replica churn", LogFieldKarpenterPDB, pdb.Namespace+"/"+pdb.Name)
+		r.Recorder.Eventf(wl.Object(), corev1.EventTypeNormal, "KarpenterSurgeSkipped", "NodePool disruption budget currently blocks consolidation; not surging to avoid replica churn (NodePoolBudgetBlocked)")
 		return ctrl.Result{RequeueAfter: r.Config.RequeueInterval}, nil
 	}
 
@@ -603,6 +637,75 @@ func (r *KarpenterSurgeReconciler) workloadHasNodeWithDrainTaint(ctx context.Con
 					return true, nil
 				}
 			}
+		}
+	}
+	return false, nil
+}
+
+// labelNodePool is the well-known label Karpenter stamps on every node it
+// provisions, recording which NodePool owns it.
+const labelNodePool = "karpenter.sh/nodepool"
+
+// workloadNodePoolBudgetBlocked reports whether any NodePool hosting a pod of
+// this workload is currently unable to consolidate because of a disruption
+// budget (as opposed to the PDB). It resolves the workload's pods to their
+// nodes, the nodes to their NodePool (via the karpenter.sh/nodepool label),
+// then asks budgetBlocksConsolidation against recent DisruptionBlocked events
+// for those NodePools.
+//
+// Fail-open by design: returns false when the workload's pods are unscheduled
+// (NodeName empty), not Karpenter-managed (no nodepool label), or no fresh
+// budget-block event exists. When we cannot resolve a NodePool we cannot prove
+// a budget is blocking, so we let the surge proceed — refusing to surge
+// whenever placement is unknown (common for Pending pods) would silently
+// disable protection for exactly the eviction case the controller targets.
+// The worst case of this fail-open is a bounded replica flap capped by
+// KarpenterSurgeTimeout, not a permanent denial.
+func (r *KarpenterSurgeReconciler) workloadNodePoolBudgetBlocked(ctx context.Context, namespace string, sel labels.Selector) (bool, error) {
+	pods, err := listMatchingPods(ctx, r.Client, namespace, sel)
+	if err != nil {
+		return false, err
+	}
+	nodePools := make(map[string]struct{}, 2)
+	for i := range pods {
+		nodeName := pods[i].Spec.NodeName
+		if nodeName == "" {
+			continue
+		}
+		var node corev1.Node
+		if err := r.Get(ctx, types.NamespacedName{Name: nodeName}, &node); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		if np := node.Labels[labelNodePool]; np != "" {
+			nodePools[np] = struct{}{}
+		}
+	}
+	if len(nodePools) == 0 {
+		return false, nil
+	}
+
+	// Read DisruptionBlocked events through the uncached APIReader so we
+	// don't force a cluster-wide Event informer into the cache. If the
+	// reader is unset (e.g. some unit tests), degrade to "not blocked".
+	reader := r.APIReader
+	if reader == nil {
+		log.FromContext(ctx).V(1).Info("APIReader unset, skipping NodePool budget gate")
+		return false, nil
+	}
+	var events corev1.EventList
+	if err := reader.List(ctx, &events,
+		client.MatchingFields{"reason": "DisruptionBlocked"},
+		client.Limit(500),
+	); err != nil {
+		return false, fmt.Errorf("list DisruptionBlocked events for budget check: %w", err)
+	}
+	ttl := 2 * r.Config.KarpenterSurgeScanPeriod
+	for np := range nodePools {
+		if budgetBlocksConsolidation(events.Items, np, r.timeNow(), ttl) {
+			return true, nil
 		}
 	}
 	return false, nil
