@@ -27,6 +27,18 @@ controller:
     enabled: false
     gracePeriod: "60s"
     timeout: "10m"
+  # Karpenter-surge handles the case where Karpenter's *disruption*
+  # controller aborts pre-taint when a PDB would block eviction in
+  # dry-run (single-replica + `minAvailable: 1`). Trigger is the PDB
+  # (disruptionsAllowed=0), not a Karpenter Event. Default ON: the PDB
+  # this controller requires is the exact mechanism that creates the
+  # Karpenter stuck case, so opting users into the workaround would
+  # transfer to them a problem we introduced. Set to false to opt out.
+  karpenterSurge:
+    enabled: true
+    gracePeriod: "60s"
+    timeout: "10m"
+    scanPeriod: "60s"
 
 nodeSelector:
   kubernetes.io/os: linux

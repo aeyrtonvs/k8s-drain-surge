@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-A Kubernetes controller (Go, controller-runtime) that prevents downtime for single-replica workloads during disruptive eviction events. Two protections:
+A Kubernetes controller (Go, controller-runtime) that prevents downtime for single-replica workloads during disruptive eviction events. Three protections:
 
 1. **Drain-surge** (always on) — when a node gets a drain taint, scale opted-in `Deployment`s and Argo `Rollout`s from 1→2 replicas, wait for the surge pod Ready on a different node, let the eviction happen, scale back.
 2. **Restart-surge** (opt-in via `--restart-surge-enabled`) — when an Argo Rollout's `spec.restartAt` is blocked by a PDB (Argo's `PodRestarter` uses the eviction API and a single-replica PDB rejects it indefinitely), surge 1→2 so the PDB permits the eviction, then scale back once Argo finishes.
+3. **Karpenter-surge** (default ON, `--karpenter-surge-enabled=true`) — when Karpenter's *disruption* controller refuses to taint a node because a PDB would block eviction in dry-run (`disruptionsAllowed=0`), surge 1→2 so the PDB allows consolidation. The trigger is the PDB itself, not a Karpenter Event. Default on because the PDB this controller asks operators to create is precisely what causes the Karpenter pre-taint stuck case — opting users in to the workaround would transfer to them a problem the controller's own prerequisite introduces. See `docs/specs/plan-karpenter-pretaint-surge.md` for the upstream code paths that lead to this gap.
 
 Module: `github.com/aeyrtonvs/k8s-drain-surge`. Go 1.25. Builds against `k8s.io/*` v0.30 and `controller-runtime` v0.18.
 
@@ -44,12 +45,13 @@ CI (`.github/workflows/ci.yaml`) runs: `go mod tidy`, `go vet`, `go test -race`,
 
 ### Entry point and reconciler topology
 
-`cmd/controller/main.go` wires a controller-runtime manager with two reconcilers:
+`cmd/controller/main.go` wires a controller-runtime manager with up to three reconcilers:
 
 - `NodeReconciler` (`internal/controller/node_controller.go`) — always on. Handles node drains. Keyed on `Node`, watches `Node`, `Pod` (mapped to `spec.nodeName`), and `Rollout`/`Deployment` (mapped to their `AnnotationDrainNode`). A field index on `Pod.spec.nodeName` makes pods-on-node lookups O(matches).
 - `RolloutReconciler` (`internal/controller/rollout_controller.go`) — opt-in via `--restart-surge-enabled`. Handles restart-surge for Argo Rollouts. Keyed on `Rollout`, watches `Rollout` and `Pod` (mapped via `ResolveWorkloadFromPod` back to its parent Rollout). No node watches; the trigger is the Rollout's own `spec.restartAt`.
+- `KarpenterSurgeReconciler` (`internal/controller/karpenter_controller.go`) — opt-in via `--karpenter-surge-enabled`. Handles the Karpenter pre-taint surge for both Rollouts and Deployments. Keyed on the workload, watches `Rollout`, `Deployment`, `Pod`, and `PodDisruptionBudget`. Trigger: PDB transitions to `disruptionsAllowed=0` (via watch predicate) or the absolute backup scanner fires (covers informer desync).
 
-Both reconcilers register the same schemes (`corev1`, `rolloutsv1alpha1`) and share leader election; `RecoverOrphans` runs once per reconciler after election.
+All reconcilers register the same schemes (`corev1`, `rolloutsv1alpha1`) and share leader election; `RecoverOrphans` runs once per reconciler after election.
 
 ### Per-workload state machine
 
@@ -95,6 +97,36 @@ Safety:
 
 Orphan recovery on leader election: any Rollout with `AnnotationRestartSurgeState` whose `spec.restartAt` is cleared or whose `status.restartedAt` has caught up is aborted (scale back, clear).
 
+### Karpenter pre-taint surge state machine
+
+**Enabled by default** (`--karpenter-surge-enabled=true`). Lives in `karpenter_controller.go` (reconciler), `karpenter_detect.go` (PDB-state helpers + grace-period tracker), and `karpenter_pdb_predicate.go` (watch filter + PDB→workload map). Applies to both Rollouts and Deployments (the trigger is the PDB, not a workload-kind-specific signal). The default is on because the install guide already asks operators to create a `minAvailable: 1` PDB, and that very PDB is what triggers the Karpenter pre-taint stuck case — making this opt-in would hand operators a regression they did not cause.
+
+The trigger problem: Karpenter's disruption controller (`pkg/controllers/disruption/controller.go::disrupt`, validated by `ValidatePodsDisruptable`) dry-runs the eviction and, when a PDB would reject it, **drops the candidate before applying `karpenter.sh/disrupted`**. Consolidation then retries every 10s (`pollingPeriod`) emitting `DisruptionBlocked … Pdb prevents pod evictions` Events without ever tainting. Result: drain-surge's taint-driven path never fires. The termination controller (manual delete, expiration, spot-interrupt) does apply the taint and is still covered by `NodeReconciler`.
+
+Trigger is the PDB itself:
+- **Watch predicate**: `Create` with `disruptionsAllowed == 0`, or `Update` with `old.disruptionsAllowed > 0 && new == 0`. Other transitions (`0→1`, `0→0`, deletes) are rejected — the reconciler picks up unblocks via its own polling.
+- **Backup scanner**: an absolute ticker every `--karpenter-surge-scan-period` (default 60s) lists PDBs cluster-wide and emits synthetic enqueue events for any with `disruptionsAllowed == 0`. Covers informer cache desync after crash/restart.
+
+States, stored under disjoint annotation keys (`AnnotationKarpenterSurgeState`, `AnnotationKarpenterSurgeStart`, `AnnotationKarpenterSurgePDB`):
+
+```
+none → pending → scaled-up → ready → draining → done → (cleared)
+```
+
+Handler responsibilities:
+- `handleKarpenterPending` — runs the gate suite (opt-in → no other state machine active → stable → single-replica → CanSurge → PDB found and blocked → `pdbWouldAllowSurge(pdb, replicas+1)` → workload pod's node has no drain taint → **NodePool disruption budget not currently blocking** → HPA permits surge → grace period elapsed). The NodePool-budget gate (`workloadNodePoolBudgetBlocked` → `budgetBlocksConsolidation`) reads Karpenter's `DisruptionBlocked` Events via the uncached `APIReader`: a fresh event on `kind=NodePool` containing `blocking budget` means a budget (not the PDB) forbids consolidation, so surging would only flap replicas with no node ever consolidating. The discriminant is structural (`involvedObject.kind == NodePool`, since PDB-rejection events fire on Node/NodeClaim) with the substring as secondary confirmation. Freshness window is `2 × scanPeriod`. On block: emit `KarpenterSurgeSkipped` reason `NodePoolBudgetBlocked`, reset the grace tracker, requeue. Tracks first-observation timestamps per `pdb.UID` in an in-memory `gracePeriodTracker` (rebuilt on restart; worst case: one extra grace period of delay). On accept, surges 1→2 (or patches HPA `minReplicas`) and stamps annotations.
+- `handleKarpenterScaleUp` / `handleKarpenterWaitReady` — same competing-controller re-apply pattern as drain.
+- `handleKarpenterReady` — waits for one of three transitions: a drain taint appears on a workload pod's node (yield via `yieldToDrain`), the PDB unblocks (transition to `draining`), or timeout (`abortKarpenterSurge`).
+- `handleKarpenterScaleDown` — enforces the **R9 invariant** (only undo what we applied): if `spec.replicas != original+1` (no HPA) or `hpa.spec.minReplicas != original+1` (HPA), the operator/ArgoCD changed things externally; emit `KarpenterSurgeYielded` with reason `ExternalScaleChange` and clear annotations **without** touching replicas. Otherwise restore HPA / scale back to original.
+- `handleKarpenterCleanup` — clears annotations, emits `KarpenterSurgeComplete`.
+
+Safety:
+- Stale/timeout abort (`KarpenterSurgeTimeout`, default 10m; 3× for "stale") at the top of every reconcile.
+- **Drain-takes-over yield**: a drain real that lands on a workload mid-karpenter-surge wins. `yieldToDrain` clears only the karpenter-surge **exclusive** keys (state/start/PDB) and preserves shared bookkeeping (`AnnotationOriginalReplicas`, HPA keys) so the drain machinery can finish the cycle. Use `clearKarpenterSurgeExclusiveAnnotations` for that path; `clearKarpenterSurgeAnnotations` is full-cycle cleanup.
+- **R5 not handled in MVP**: when Karpenter consolidates the *surge* pod instead of the original (it sees `disruptionsAllowed=1` and picks any candidate), timeout fires without resolving the bottleneck. Workaround documented in README: `kubectl cordon <original-node>`.
+
+Orphan recovery on leader election: any workload with `AnnotationKarpenterSurgeState` whose PDB no longer exists, has `disruptionsAllowed >= 1`, or whose surge started >3× timeout ago is aborted (restore + clear). Also aborts every active surge when the feature gate is turned off.
+
 ### HPA-aware scaling
 
 When an HPA targets the workload, the controller never touches `spec.replicas` directly — the HPA always wins. Instead `handlePending` patches the HPA's `spec.minReplicas` to `original+1` (saving the original in `AnnotationHPAOriginalMinReplicas` and the HPA name in `AnnotationHPAName`), and `handleWaitEviction` / `abortWorkload` call `restoreHPA` to put it back. HPAs with `maxReplicas <= 1` or `maxReplicas < original+1` cause the workload to be skipped (recorded as a `DrainSkipped` event). See `scaler.go::FindMatchingHPA` / `PatchHPAMinReplicas`. The restart-surge state machine reuses the same HPA helpers and shared annotations.
@@ -127,9 +159,13 @@ On leader election (in `main.go`), `RecoverOrphans` lists every Rollout and Depl
 - `--restart-surge-enabled=false` (opt-in)
 - `--restart-surge-grace-period=60s` — wait this long after `spec.restartAt` before triggering a surge, to let Argo finish the restart on its own when the PDB permits.
 - `--restart-surge-timeout=10m` — total budget for one restart-surge operation; abort and restore on overrun.
-- Drain taints (hardcoded in `DefaultDrainTaints`, not configurable via flag): `karpenter.sh/disrupted`, `ToBeDeletedByClusterAutoscaler`, `node.kubernetes.io/unschedulable`. If you need to add a taint, edit `config.go`.
+- `--karpenter-surge-enabled=true` (default on — see rationale in the "Karpenter pre-taint surge state machine" section)
+- `--karpenter-surge-grace-period=60s` — time a PDB must stay at `disruptionsAllowed=0` before triggering a karpenter-surge (≈ 6 Karpenter pollingPeriod cycles; discards transient blocks).
+- `--karpenter-surge-timeout=10m` — total budget for one karpenter-surge operation; abort and restore on overrun.
+- `--karpenter-surge-scan-period=60s` — absolute backup ticker that scans PDBs cluster-wide for stuck workloads (covers informer desync after crash/restart). Must be `>= --requeue-interval`.
+- Drain taints (hardcoded in `DefaultDrainTaints`, not configurable via flag): `karpenter.sh/disrupted`, `ToBeDeletedByClusterAutoscaler`, `node.kubernetes.io/unschedulable`. If you need to add a taint, edit `config.go`. Note: the `karpenter.sh/disrupted` taint is **only** applied by Karpenter's termination controller (manual delete, expiration, spot-interrupt). The disruption controller refuses to apply it when a PDB would block eviction — that gap is what karpenter-surge addresses.
 
-`Validate` enforces `ReadinessTimeout > RequeueInterval`. When `RestartSurgeEnabled=true`, additionally enforces `RestartSurgeTimeout > RestartSurgeGracePeriod > RequeueInterval`.
+`Validate` enforces `ReadinessTimeout > RequeueInterval`. When `RestartSurgeEnabled=true`, additionally enforces `RestartSurgeTimeout > RestartSurgeGracePeriod > RequeueInterval`. When `KarpenterSurgeEnabled=true`, enforces `KarpenterSurgeTimeout > KarpenterSurgeGracePeriod` and `KarpenterSurgeScanPeriod >= RequeueInterval`.
 
 ## Layout
 

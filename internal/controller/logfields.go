@@ -22,8 +22,17 @@ const (
 	LogFieldDrainNode   = "drainNode"
 	LogFieldRestartAt   = "restartAt"
 
+	LogFieldElapsed     = "elapsed"
+	LogFieldGracePeriod = "gracePeriod"
+	LogFieldRemaining   = "remaining"
+
 	LogFieldRolloutPhase   = "rolloutPhase"
 	LogFieldRolloutMessage = "rolloutMessage"
+
+	LogFieldKarpenterPDB         = "karpenterPDB"
+	LogFieldKarpenterSurgeState  = "karpenterSurgeState"
+	LogFieldDisruptionsAllowed   = "disruptionsAllowed"
+	LogFieldReason               = "reason"
 )
 
 // Field index keys registered on the controller-runtime cache.

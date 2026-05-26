@@ -35,19 +35,24 @@ type DrainableWorkload interface {
 	GetPodSelector() labels.Selector
 	GetObjectMeta() *metav1.ObjectMeta
 	GetObjectKind() string
-	Patch(ctx context.Context, c client.Client) error
+	// PatchOwned applies a MergePatch with spec.replicas and annotations. Any
+	// key in ownedKeys absent from the workload's in-memory annotations map
+	// is set to null so the merge patch deletes it server-side. Callers must
+	// pass ONLY the keys that the calling reconciler administers; passing a
+	// superset would clobber peers' annotations across reconcilers.
+	PatchOwned(ctx context.Context, c client.Client, ownedKeys []string) error
 	Object() client.Object
 }
 
 // patchReplicasAndAnnotations applies a MergePatch with replicas and annotations.
-// Annotations present in the map are set; drain annotation keys absent from the
+// Annotations present in the map are set; keys in ownedKeys absent from the
 // map are explicitly set to null so the merge patch deletes them server-side.
-func patchReplicasAndAnnotations(ctx context.Context, c client.Client, obj client.Object, replicas *int32, annotations map[string]string) error {
-	annoPatch := make(map[string]interface{}, len(annotations)+len(drainAnnotationKeys))
+func patchReplicasAndAnnotations(ctx context.Context, c client.Client, obj client.Object, replicas *int32, annotations map[string]string, ownedKeys []string) error {
+	annoPatch := make(map[string]interface{}, len(annotations)+len(ownedKeys))
 	for k, v := range annotations {
 		annoPatch[k] = v
 	}
-	for _, key := range drainAnnotationKeys {
+	for _, key := range ownedKeys {
 		if _, exists := annotations[key]; !exists {
 			annoPatch[key] = nil
 		}
@@ -126,8 +131,8 @@ func (r *RolloutWorkload) GetObjectMeta() *metav1.ObjectMeta {
 
 func (r *RolloutWorkload) GetObjectKind() string { return "Rollout" }
 
-func (r *RolloutWorkload) Patch(ctx context.Context, c client.Client) error {
-	return patchReplicasAndAnnotations(ctx, c, r.Rollout, r.Rollout.Spec.Replicas, r.Rollout.Annotations)
+func (r *RolloutWorkload) PatchOwned(ctx context.Context, c client.Client, ownedKeys []string) error {
+	return patchReplicasAndAnnotations(ctx, c, r.Rollout, r.Rollout.Spec.Replicas, r.Rollout.Annotations, ownedKeys)
 }
 
 func (r *RolloutWorkload) Object() client.Object { return r.Rollout }
@@ -172,8 +177,8 @@ func (d *DeploymentWorkload) GetObjectMeta() *metav1.ObjectMeta {
 
 func (d *DeploymentWorkload) GetObjectKind() string { return "Deployment" }
 
-func (d *DeploymentWorkload) Patch(ctx context.Context, c client.Client) error {
-	return patchReplicasAndAnnotations(ctx, c, d.Deployment, d.Deployment.Spec.Replicas, d.Deployment.Annotations)
+func (d *DeploymentWorkload) PatchOwned(ctx context.Context, c client.Client, ownedKeys []string) error {
+	return patchReplicasAndAnnotations(ctx, c, d.Deployment, d.Deployment.Spec.Replicas, d.Deployment.Annotations, ownedKeys)
 }
 
 func (d *DeploymentWorkload) Object() client.Object { return d.Deployment }

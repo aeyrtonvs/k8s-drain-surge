@@ -15,10 +15,19 @@
   <a href="https://artifacthub.io/packages/search?repo=k8s-drain-surge"><img alt="Artifact Hub" src="https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/k8s-drain-surge"></a>
 </p>
 
-A Kubernetes controller that protects single-replica `Deployment`s and Argo `Rollout`s from downtime during disruptive events — node drains by Karpenter / Cluster Autoscaler / `kubectl drain` / `kubectl cordon`, and PDB-blocked Argo Rollout restarts. Two opt-in protections:
+A Kubernetes controller that protects single-replica `Deployment`s and Argo `Rollout`s from downtime during disruptive events — node drains by Karpenter / Cluster Autoscaler / `kubectl drain` / `kubectl cordon`, PDB-blocked Argo Rollout restarts, and Karpenter consolidations that abort pre-taint when a PDB would reject the eviction in dry-run. Three protections:
 
 - **Drain-surge** (always on) — when a node is tainted for drain, temporarily scales opted-in workloads 1→2 replicas, waits for the new pod to be Ready on a different node, lets the eviction proceed, then scales back.
-- **Restart-surge** (opt-in) — when an Argo Rollout's `restart` is stuck because Argo's PodRestarter uses the eviction API and a `minAvailable: 1` PDB rejects it indefinitely, surges 1→2 so the eviction can proceed, then scales back once Argo finishes. Argo Rollouts only — Deployments don't need this because `kubectl rollout restart deployment/...` uses delete (not eviction) and bypasses PDBs.
+- **Restart-surge** (opt-in) — when an Argo Rollout's `restart` is stuck because Argo's PodRestarter uses the eviction API and a `minAvailable: 1` PDB rejects it indefinitely, surges 1→2 so the eviction can proceed, then scales back once Argo finishes. Argo Rollouts only.
+- **Karpenter-surge** (default on) — when Karpenter's *disruption* controller refuses to taint a node because a single-replica PDB would block eviction in dry-run, the standard drain-surge path never fires. This mode triggers on the PDB itself (`disruptionsAllowed=0`) and surges 1→2 so Karpenter can proceed with consolidation. Default on because the PDB this controller already requires is the very mechanism that creates the Karpenter stuck case — making it opt-in would transfer that problem to operators.
+
+| Disruptor | Covered by |
+|---|---|
+| `kubectl drain` / `cordon` | drain-surge |
+| Cluster Autoscaler | drain-surge |
+| Karpenter — multi-replica or termination controller (manual delete, expiration, spot-interrupt) | drain-surge (taint is applied) |
+| Karpenter — single-replica with PDB `minAvailable: 1` (disruption controller aborts pre-taint) | **karpenter-surge** |
+| Argo Rollout `spec.restartAt` blocked by PDB | restart-surge |
 
 Supports **Argo Rollouts** (Canary and Blue-Green) and **Deployments**.
 
@@ -50,6 +59,7 @@ See [What you need to do](#what-you-need-to-do) for the full opt-in checklist (A
 - **Opt-in by annotation** — never touches a workload without `k8s-drain-surge.io/enabled: "true"`
 - **Drain-surge** — pre-empts evictions from Karpenter, Cluster Autoscaler, and manual `kubectl drain` / `kubectl cordon`
 - **Restart-surge** — unblocks PDB-stuck `kubectl argo rollouts restart` on single-replica Rollouts
+- **Karpenter-surge** — handles the pathological case where Karpenter's disruption controller bails out pre-taint on a single-replica + `minAvailable: 1` workload; triggers off the PDB rather than the (never-applied) taint
 - **HPA-aware** — patches `minReplicas` instead of `spec.replicas` when an HPA is attached; restores on completion
 - **ArgoCD / FluxCD friendly** — detects external resets of `spec.replicas` mid-surge and re-applies (with `ignoreDifferences` documented)
 - **Crash-safe** — every operation is annotation-driven and idempotent; a restarted controller resumes from on-disk state
@@ -163,6 +173,33 @@ When you enable `--restart-surge-enabled=true` (or `controller.restartSurge.enab
 ```
 
 Uses the same `k8s-drain-surge.io/enabled: "true"` opt-in annotation as drain-surge. Same PDB requirement.
+
+## Karpenter-surge (default on)
+
+Karpenter's consolidation flow dry-runs every eviction before applying `karpenter.sh/disrupted`. When a single-replica workload has a `minAvailable: 1` PDB, the dry-run predicts `PodDisruptionBudget` rejection and Karpenter **aborts pre-taint**, emitting `DisruptionBlocked` Events and retrying every 10s. Because no taint is ever applied, drain-surge's taint-driven path never fires; the node stays underutilized indefinitely.
+
+Karpenter-surge is enabled by default (`--karpenter-surge-enabled=true`) because the PDB this controller already asks operators to create is precisely the mechanism that creates the stuck case. Leaving it opt-in would mean operators follow the install guide, create the PDB, and then watch Karpenter start failing — a problem the controller itself introduces.
+
+With karpenter-surge enabled, the controller:
+
+```
+1. Watches PDBs and detects the transition disruptionsAllowed: 1 -> 0
+2. Waits a grace period (default 60s) to discard transient blocks
+3. Verifies all gates: opt-in, single-replica, stable, PDB resolves, surge would unblock it,
+   the workload pod's node has no drain taint, HPA permits surge
+4. Scales the workload 1 -> 2 (or patches HPA minReplicas)
+5. Once 2 pods are Ready, Karpenter sees disruptionsAllowed=1 and proceeds with consolidation
+6. If a drain taint appears in the meantime, yields to drain-surge (preserves shared state)
+7. If the PDB unblocks naturally, scales back to original
+```
+
+Gates that intentionally skip (no action, `KarpenterSurgeSkipped` Event with reason):
+- HPA `maxReplicas` < `original + 1` — the operator capped surge explicitly
+- PDB requires all replicas available (`minAvailable: N` with `replicas: N`, or `100%`) — surge would not unblock anything; the PDB is misconfigured
+- Workload is not single-replica — out of scope
+- Workload pod's node already has a drain taint — drain-surge owns it
+
+Uses the same `k8s-drain-surge.io/enabled: "true"` opt-in annotation. Applies to both Rollouts and Deployments. **The MVP does not bias scheduling**: if Karpenter picks the surge pod to evict instead of the original, the operation times out without progress — workaround is `kubectl cordon <node>` to force the drain-surge path.
 
 ## What you need to do
 
@@ -336,6 +373,10 @@ All configuration is done through the Helm `values.yaml`:
 | `controller.restartSurge.enabled` | `false` | Enable restart-surge protection (Argo Rollouts only) |
 | `controller.restartSurge.gracePeriod` | `60s` | Wait this long after `spec.restartAt` before surging (lets Argo finish unaided when PDB permits) |
 | `controller.restartSurge.timeout` | `10m` | Total budget for one restart-surge operation |
+| `controller.karpenterSurge.enabled` | `false` | Enable karpenter-surge (PDB-triggered pre-taint surge) |
+| `controller.karpenterSurge.gracePeriod` | `60s` | Time PDB must stay at `disruptionsAllowed=0` before surging |
+| `controller.karpenterSurge.timeout` | `10m` | Total budget for one karpenter-surge operation |
+| `controller.karpenterSurge.scanPeriod` | `60s` | Backup ticker that scans PDBs cluster-wide (covers informer desync) |
 | `priorityClassName` | `system-cluster-critical` | Pod priority class |
 | `nodeSelector` | `kubernetes.io/os: linux` | Node selector for controller pods |
 
@@ -444,6 +485,12 @@ spec:
 | Timeout on Windows pods | Windows nodes take 12-17min to start | Set `--readiness-timeout 15m` or higher |
 | Short-lived extra pod appears during scale-down | ReplicaSet controller observes `desired=2` briefly while the old pod terminates and creates a replacement; deleted on the next reconcile when replicas are patched back | Expected. Scaling down before the old pod terminates would risk deleting the surge pod instead. |
 | `kubectl argo rollouts restart` on single-replica Rollout hangs forever | Argo's PodRestarter uses eviction API; PDB `minAvailable: 1` rejects every attempt | Enable restart-surge (`--restart-surge-enabled=true`), or unblock manually by clearing `spec.restartAt` and changing `spec.template` instead |
+| Karpenter logs `DisruptionBlocked … Pdb prevents pod evictions (PodDisruptionBudget=…)` cyclically; node never gets `karpenter.sh/disrupted` taint and never consolidates | Karpenter's disruption controller refuses to taint when a PDB would reject the eviction in dry-run | Enable karpenter-surge (`--karpenter-surge-enabled=true`) and annotate the workload as opted-in. Workaround until enabled: `kubectl cordon <node>` to force the drain-surge path |
+| `KarpenterSurgeSkipped … HPAMaxReplicasInsufficient` | HPA `maxReplicas` ≤ `original + 1`, the operator capped scaling explicitly | Raise `maxReplicas` to at least `original + 1`, or remove the HPA |
+| `KarpenterSurgeSkipped … PDBOverConstrained` | PDB requires all replicas available (`minAvailable: N` with `replicas: N`, or `100%`). Surging would not unblock anything | Fix the PDB — for a single-replica workload, use `minAvailable: 1` (absolute), not a 100% percent expression |
+| `KarpenterSurgeAborted` after 10 minutes and the original node is still stuck | Karpenter likely consolidated the *surge* pod instead of the original (the MVP does not bias scheduling — see R5 in `docs/specs/plan-karpenter-pretaint-surge.md`) | Workaround: `kubectl cordon <original-node>` to force the drain-surge path |
+| `KarpenterSurgeYielded … ExternalScaleChange` | The operator or ArgoCD modified `spec.replicas` (or the HPA's `minReplicas`) mid-cycle. The controller honors the new value and steps aside | No action — the controller only undoes what it applied |
+| `KarpenterSurgeSkipped … NodePoolBudgetBlocked` and Karpenter logs `… due to blocking budget` | Karpenter cannot consolidate the workload's NodePool right now because a **disruption budget** (`spec.disruption.budgets`, e.g. `nodes: "0"` outside a scheduled window) forbids it — independent of the PDB | Expected when outside the budget's allowed window. The controller deliberately does **not** surge here, to avoid flapping replicas 1→2→1 while no consolidation can happen. If you want consolidation during this time, widen the NodePool's disruption budget |
 
 Manual cleanup if replicas are stuck:
 

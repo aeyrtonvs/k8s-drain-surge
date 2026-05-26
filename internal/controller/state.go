@@ -34,13 +34,65 @@ const (
 	// clear which operation owns the workload.
 	AnnotationRestartSurgeState = "k8s-drain-surge.io/restart-surge-state"
 	AnnotationRestartSurgeStart = "k8s-drain-surge.io/restart-surge-start"
+
+	// AnnotationRestartSurgePendingLogged records the spec.restartAt value
+	// for which we have already emitted a "waiting for grace period" Info
+	// log. Prevents duplicating that log on every requeue while a restart
+	// is in flight. Cleared automatically by the merge patch in
+	// patchReplicasAndAnnotations when the reconcile transitions to the
+	// state machine or a new restartAt arrives.
+	AnnotationRestartSurgePendingLogged = "k8s-drain-surge.io/restart-surge-pending-logged"
+
+	// Karpenter-surge annotations. Parallel to drain and restart-surge;
+	// mutually exclusive on a given workload (gate checks prevent overlap).
+	AnnotationKarpenterSurgeState = "k8s-drain-surge.io/karpenter-surge-state"
+	AnnotationKarpenterSurgeStart = "k8s-drain-surge.io/karpenter-surge-start"
+	AnnotationKarpenterSurgePDB   = "k8s-drain-surge.io/karpenter-surge-pdb"
 )
 
 const reasonNewRSAvailable = "NewReplicaSetAvailable"
 
-// drainAnnotationKeys enumerates every annotation this controller owns.
-// patchReplicasAndAnnotations nullifies any key in this slice that is
-// absent from a given patch, so omissions silently delete on-disk state.
+// drainOwnedKeys lists the annotations the NodeReconciler (drain-surge) owns.
+// Its Patch invocations nullify any of these absent from the patch payload,
+// so a reconciler only ever clobbers keys it administers — never the keys
+// owned by the restart-surge or karpenter-surge reconcilers running in the
+// same controller process.
+var drainOwnedKeys = []string{
+	AnnotationDrainState,
+	AnnotationOriginalReplicas,
+	AnnotationDrainNode,
+	AnnotationDrainStart,
+	AnnotationHPAName,
+	AnnotationHPAOriginalMinReplicas,
+}
+
+// restartSurgeOwnedKeys: keys owned by the RolloutReconciler (restart-surge).
+// Includes the shared bookkeeping (original-replicas, HPA pointer/min) so a
+// full-cycle abort can clean them up; yield-to-drain uses
+// restartSurgeExclusiveKeys to preserve those for the drain controller.
+var restartSurgeOwnedKeys = []string{
+	AnnotationRestartSurgeState,
+	AnnotationRestartSurgeStart,
+	AnnotationRestartSurgePendingLogged,
+	AnnotationOriginalReplicas,
+	AnnotationHPAName,
+	AnnotationHPAOriginalMinReplicas,
+}
+
+// karpenterSurgeOwnedKeys: keys owned by the KarpenterSurgeReconciler.
+// Same shared-keys story as restart-surge.
+var karpenterSurgeOwnedKeys = []string{
+	AnnotationKarpenterSurgeState,
+	AnnotationKarpenterSurgeStart,
+	AnnotationKarpenterSurgePDB,
+	AnnotationOriginalReplicas,
+	AnnotationHPAName,
+	AnnotationHPAOriginalMinReplicas,
+}
+
+// drainAnnotationKeys enumerates every annotation this controller owns
+// across all three reconcilers. Used by clearDrainAnnotations (manual
+// cleanup helper) — NOT by Patch any longer; see PatchOwned.
 var drainAnnotationKeys = []string{
 	AnnotationDrainState,
 	AnnotationOriginalReplicas,
@@ -50,6 +102,10 @@ var drainAnnotationKeys = []string{
 	AnnotationHPAOriginalMinReplicas,
 	AnnotationRestartSurgeState,
 	AnnotationRestartSurgeStart,
+	AnnotationRestartSurgePendingLogged,
+	AnnotationKarpenterSurgeState,
+	AnnotationKarpenterSurgeStart,
+	AnnotationKarpenterSurgePDB,
 }
 
 // restartSurgeFullKeys are cleared on a successful restart-surge cycle or
@@ -71,6 +127,25 @@ var restartSurgeExclusiveKeys = []string{
 	AnnotationRestartSurgeStart,
 }
 
+// karpenterSurgeFullKeys are cleared on a successful karpenter-surge cycle
+// or full abort: exclusive state plus shared bookkeeping.
+var karpenterSurgeFullKeys = []string{
+	AnnotationKarpenterSurgeState,
+	AnnotationKarpenterSurgeStart,
+	AnnotationKarpenterSurgePDB,
+	AnnotationOriginalReplicas,
+	AnnotationHPAName,
+	AnnotationHPAOriginalMinReplicas,
+}
+
+// karpenterSurgeExclusiveKeys hold only the karpenter-surge state markers.
+// Used when yielding to a drain so the drain's shared keys stay intact.
+var karpenterSurgeExclusiveKeys = []string{
+	AnnotationKarpenterSurgeState,
+	AnnotationKarpenterSurgeStart,
+	AnnotationKarpenterSurgePDB,
+}
+
 func clearDrainAnnotations(annotations map[string]string) {
 	for _, key := range drainAnnotationKeys {
 		delete(annotations, key)
@@ -89,12 +164,28 @@ func clearRestartSurgeExclusiveAnnotations(annotations map[string]string) {
 	}
 }
 
+func clearKarpenterSurgeAnnotations(annotations map[string]string) {
+	for _, key := range karpenterSurgeFullKeys {
+		delete(annotations, key)
+	}
+}
+
+func clearKarpenterSurgeExclusiveAnnotations(annotations map[string]string) {
+	for _, key := range karpenterSurgeExclusiveKeys {
+		delete(annotations, key)
+	}
+}
+
 func parseDrainStart(annotations map[string]string) (time.Time, bool) {
 	return parseRFC3339Annotation(annotations, AnnotationDrainStart)
 }
 
 func parseRestartSurgeStart(annotations map[string]string) (time.Time, bool) {
 	return parseRFC3339Annotation(annotations, AnnotationRestartSurgeStart)
+}
+
+func parseKarpenterSurgeStart(annotations map[string]string) (time.Time, bool) {
+	return parseRFC3339Annotation(annotations, AnnotationKarpenterSurgeStart)
 }
 
 func parseRFC3339Annotation(annotations map[string]string, key string) (time.Time, bool) {

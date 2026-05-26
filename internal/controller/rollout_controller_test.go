@@ -203,12 +203,88 @@ func TestRestartSurge_WithinGracePeriod(t *testing.T) {
 	if result.RequeueAfter == 0 {
 		t.Fatal("expected requeue during grace period")
 	}
+	// Requeue should target the remaining grace, not the full gracePeriod —
+	// avoids waiting longer than necessary when we are already partway in.
+	if result.RequeueAfter > 30*time.Second {
+		t.Fatalf("expected RequeueAfter <= remaining grace (~30s), got %v", result.RequeueAfter)
+	}
 	var got rolloutsv1alpha1.Rollout
 	if err := c.Get(ctx, req.NamespacedName, &got); err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if _, exists := got.Annotations[AnnotationRestartSurgeState]; exists {
 		t.Fatal("expected no restart-surge state within grace period")
+	}
+	if got.Spec.Replicas != nil && *got.Spec.Replicas != 1 {
+		t.Fatalf("expected replicas=1 (unchanged), got %d", *got.Spec.Replicas)
+	}
+	// First reconcile within grace stamps the pending-logged annotation so
+	// subsequent reconciles can skip the Info log.
+	loggedAt, ok := got.Annotations[AnnotationRestartSurgePendingLogged]
+	if !ok {
+		t.Fatal("expected pending-logged annotation to be stamped on first reconcile")
+	}
+	expectedRFC := ro.Spec.RestartAt.Time.Format(time.RFC3339)
+	if loggedAt != expectedRFC {
+		t.Fatalf("pending-logged = %q, want %q", loggedAt, expectedRFC)
+	}
+
+	// Second reconcile with the same restartAt must not re-stamp (already
+	// equal) and must not transition state — idempotent within grace.
+	resourceVersionBefore := got.ResourceVersion
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	var got2 rolloutsv1alpha1.Rollout
+	if err := c.Get(ctx, req.NamespacedName, &got2); err != nil {
+		t.Fatalf("get after second reconcile: %v", err)
+	}
+	if got2.ResourceVersion != resourceVersionBefore {
+		t.Fatalf("second reconcile patched the rollout unexpectedly (rv %s -> %s)",
+			resourceVersionBefore, got2.ResourceVersion)
+	}
+}
+
+// TestRestartSurge_GraceElapsedNoStalePods: grace period already expired but
+// every pod was created *after* restartAt — Argo's PodRestarter finished the
+// restart on its own (PDB permitted it). The controller must not surge: it
+// logs once that Argo handled it unaided and returns without requeueing,
+// stamping no annotations and leaving replicas untouched.
+func TestRestartSurge_GraceElapsedNoStalePods(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	ro := newRollout("app", "default")
+	// restartAt 2 minutes in the past — well beyond the default 60s grace.
+	restartAt := now.Add(-2 * time.Minute)
+	setRestartPending(ro, restartAt)
+	// Pod created *after* restartAt: Argo already cycled it. isRestartStuck
+	// returns false because no pod predates restartAt.
+	pod := newRolloutPod("app-new", "default", "app", restartAt.Add(30*time.Second), true)
+	pdb := newRolloutPDB("app-pdb", "default", "app")
+
+	r, c := newRolloutReconciler(now, ro, pod, pdb)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "default"}}
+
+	result, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("expected no requeue when Argo handled the restart, got %v", result.RequeueAfter)
+	}
+
+	var got rolloutsv1alpha1.Rollout
+	if err := c.Get(ctx, req.NamespacedName, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, exists := got.Annotations[AnnotationRestartSurgeState]; exists {
+		t.Fatal("expected no restart-surge state when Argo restart completed unaided")
+	}
+	// The pending-logged annotation is only used to dedupe the
+	// "waiting for grace period" log. Since grace already elapsed, that
+	// log path is skipped and the annotation must not be stamped.
+	if v, exists := got.Annotations[AnnotationRestartSurgePendingLogged]; exists {
+		t.Fatalf("expected no pending-logged annotation after grace elapsed, got %q", v)
 	}
 	if got.Spec.Replicas != nil && *got.Spec.Replicas != 1 {
 		t.Fatalf("expected replicas=1 (unchanged), got %d", *got.Spec.Replicas)
